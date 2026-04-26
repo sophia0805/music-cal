@@ -10,6 +10,11 @@ type GoogleEvent = {
   end?: { dateTime?: string; date?: string };
 };
 
+const GOOGLE_CALENDAR_EVENTS_URL =
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const DEFAULT_RANGE_MONTHS = 2;
+const FETCH_PAGE_SIZE = "250";
+
 function widenRange(timeMin: string, timeMax: string) {
   const start = new Date(timeMin);
   const end = new Date(timeMax);
@@ -34,12 +39,11 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const rawMin =
-    searchParams.get("timeMin") ?? new Date().toISOString();
+  const rawMin = searchParams.get("timeMin") ?? new Date().toISOString();
   let rawMax = searchParams.get("timeMax");
   if (!rawMax) {
     const fallback = new Date(rawMin);
-    fallback.setUTCMonth(fallback.getUTCMonth() + 2);
+    fallback.setUTCMonth(fallback.getUTCMonth() + DEFAULT_RANGE_MONTHS);
     rawMax = fallback.toISOString();
   }
 
@@ -50,12 +54,10 @@ export async function GET(request: Request) {
   let pageToken: string | undefined;
 
   do {
-    const url = new URL(
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events",
-    );
+    const url = new URL(GOOGLE_CALENDAR_EVENTS_URL);
     url.searchParams.set("singleEvents", "true");
     url.searchParams.set("orderBy", "startTime");
-    url.searchParams.set("maxResults", "250");
+    url.searchParams.set("maxResults", FETCH_PAGE_SIZE);
     url.searchParams.set("timeMin", timeMin);
     url.searchParams.set("timeMax", timeMax);
     if (timeZone) {

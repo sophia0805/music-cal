@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import Providers from "@/components/providers";
 import { Geist, Geist_Mono } from "next/font/google";
+import Providers from "@/components/providers";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Google Calendar Viewer",
-  description: "Connect your Google account and view upcoming calendar events.",
+  title: "Music Cal",
+  description: "turn your calendar into a song!",
 };
 
 export default function RootLayout({
@@ -28,7 +28,7 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="flex min-h-full flex-col">
         <Providers>{children}</Providers>
       </body>
     </html>
