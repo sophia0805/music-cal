@@ -53,22 +53,32 @@ function fillTextClipped(
 const yForWeekRow = (weekRow: number) => RULER_HEIGHT + weekRow * ROW_HEIGHT;
 
 const midiToFreq = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
-const midiFromDayIndex = (dayIndex: number) => PENTATONIC[dayIndex % PENTATONIC.length];
 const noteColor = (midi: number) => NOTE_COLORS[midi % NOTE_COLORS.length];
 
-function pentatonicIndexFromMidi(midi: number): number {
-  const i = PENTATONIC.indexOf(midi);
-  if (i !== -1) return i;
-  let best = 0;
-  let bestDist = Infinity;
-  for (let j = 0; j < PENTATONIC.length; j++) {
-    const d = Math.abs(PENTATONIC[j] - midi);
-    if (d < bestDist) {
-      bestDist = d;
-      best = j;
-    }
-  }
-  return best;
+const COLUMN_MIDI: readonly number[] = [
+  PENTATONIC[0],
+  PENTATONIC[1],
+  PENTATONIC[2],
+  PENTATONIC[3],
+  PENTATONIC[4],
+  PENTATONIC[5],
+  PENTATONIC[6],
+];
+
+function midiForColumn(col: number): number {
+  const c = ((col % GRID_COLS) + GRID_COLS) % GRID_COLS;
+  return COLUMN_MIDI[c];
+}
+
+const CHORD_STEPS = [0, 4, 7, 12, 16, 19];
+
+function chordVoiceMidi(col: number, voiceIndex: number): number {
+  const base = midiForColumn(col);
+  const n = CHORD_STEPS.length;
+  const step = voiceIndex % n;
+  const extraOct = Math.floor(voiceIndex / n);
+  const m = base + CHORD_STEPS[step] + extraOct * 12;
+  return Math.max(36, Math.min(96, m));
 }
 
 type CalEvent = {
@@ -86,7 +96,6 @@ type LayoutNote = CalEvent & {
   weekRow: number;
   startCol: number;
   colSpan: number;
-  midi: number;
 };
 
 type LayoutCell = CalEvent & {
@@ -97,19 +106,70 @@ type LayoutCell = CalEvent & {
   depth: number;
 };
 
+function compareCellsSameColumn(a: LayoutCell, b: LayoutCell): number {
+  return (
+    a.weekRow - b.weekRow ||
+    a.start.getTime() - b.start.getTime() ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+/** Lower on the roll → lower chord voice (bass/root). */
+function compareCellsForChordVoicing(a: LayoutCell, b: LayoutCell): number {
+  return (
+    b.weekRow - a.weekRow ||
+    b.stack - a.stack ||
+    a.start.getTime() - b.start.getTime() ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function assignChordVoicesByColumn(cells: LayoutCell[]): void {
+  const byCol = new Map<number, LayoutCell[]>();
+  for (const c of cells) {
+    if (!byCol.has(c.col)) byCol.set(c.col, []);
+    byCol.get(c.col)!.push(c);
+  }
+  for (const arr of byCol.values()) {
+    arr.sort(compareCellsForChordVoicing);
+    arr.forEach((c, i) => {
+      c.midi = chordVoiceMidi(c.col, i);
+    });
+  }
+}
+
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-function dayIndexBounds(
-  startMs: number,
-  endMs: number,
-  viewStartMs: number,
+function parseGoogleAllDayYmd(ymd: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd.trim());
+  if (!m) return new Date(ymd);
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
+}
+
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function dayIndexBoundsForEvent(
+  ev: CalEvent,
+  viewStart: Date,
   totalDays: number
 ): { startD: number; endD: number } | null {
   const dayMs = 86400000;
-  const startD = Math.floor((startMs - viewStartMs) / dayMs);
-  const endD = Math.ceil((endMs - viewStartMs) / dayMs);
+  const vs = startOfLocalDay(viewStart).getTime();
+  const startDayMs = startOfLocalDay(ev.start).getTime();
+  const startD = Math.floor((startDayMs - vs) / dayMs);
+
+  const endExclusiveMs = ev.allDay
+    ? startOfLocalDay(ev.end).getTime()
+    : startOfLocalDay(ev.end).getTime() + dayMs;
+
+  const endD = Math.min(
+    totalDays,
+    Math.max(0, Math.round((endExclusiveMs - vs) / dayMs))
+  );
   const s = Math.max(0, startD);
-  const e = Math.min(totalDays, endD);
+  const e = endD;
   if (e <= s) return null;
   return { startD: s, endD: e };
 }
@@ -137,28 +197,21 @@ function layoutRollNotes(
   activeRange: ActiveRange,
   totalDays: number
 ): LayoutNote[] {
-  const viewStart = activeRange.start.getTime();
   const sorted = [...events].sort((a, b) => a.start.getTime() - b.start.getTime());
   const result: LayoutNote[] = [];
 
-  sorted.forEach((ev, slotIndex) => {
-    const bounds = dayIndexBounds(ev.start.getTime(), ev.end.getTime(), viewStart, totalDays);
+  sorted.forEach((ev) => {
+    const bounds = dayIndexBoundsForEvent(ev, activeRange.start, totalDays);
     if (!bounds) return;
     const { startD, endD } = bounds;
     const segments = rowSegments(startD, endD);
-    const dayKey = startD;
 
     segments.forEach((seg) => {
-      const baseIdx = pentatonicIndexFromMidi(midiFromDayIndex(dayKey));
-      const pitchRow = (baseIdx + slotIndex + seg.weekRow) % PENTATONIC.length;
-      const midi = PENTATONIC[pitchRow];
-
       result.push({
         ...ev,
         weekRow: seg.weekRow,
         startCol: seg.startCol,
         colSpan: seg.colSpan,
-        midi,
       });
     });
   });
@@ -182,7 +235,7 @@ function layoutRollCells(segments: LayoutNote[]): LayoutCell[] {
         link: seg.link,
         weekRow: seg.weekRow,
         col,
-        midi: seg.midi,
+        midi: 0,
         stack: 0,
         depth: 1,
       };
@@ -202,6 +255,7 @@ function layoutRollCells(segments: LayoutNote[]): LayoutCell[] {
     const depth = arr.length;
     arr.forEach((c, i) => out.push({ ...c, stack: i, depth }));
   }
+  assignChordVoicesByColumn(out);
   return out;
 }
 
@@ -428,7 +482,16 @@ export default function CalendarGrid() {
       (activeRange.end.getTime() - viewStart.getTime()) / 86400000
     );
     const totalDurationSeconds = GRID_COLS * SECONDS_PER_COLUMN;
-    const layout = layoutRollNotes(calEvents, activeRange, totalViewDays);
+    const segments = layoutRollNotes(calEvents, activeRange, totalViewDays);
+    const cells = layoutRollCells(segments);
+    const cellsByCol = new Map<number, LayoutCell[]>();
+    for (const c of cells) {
+      if (!cellsByCol.has(c.col)) cellsByCol.set(c.col, []);
+      cellsByCol.get(c.col)!.push(c);
+    }
+    for (const arr of cellsByCol.values()) {
+      arr.sort(compareCellsSameColumn);
+    }
 
     type WindowWithWebKitAudio = Window & { webkitAudioContext?: typeof AudioContext };
     const AudioContextCtor =
@@ -446,7 +509,6 @@ export default function CalendarGrid() {
       let cancelled = false;
 
       const finishPlayback = () => {
-        cancelled = true;
         setIsPlaying(false);
         setPlayheadColumn(null);
         if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
@@ -455,7 +517,10 @@ export default function CalendarGrid() {
         void audioContext.close();
       };
 
-      stopPlaybackRef.current = finishPlayback;
+      stopPlaybackRef.current = () => {
+        cancelled = true;
+        finishPlayback();
+      };
 
       try {
         await audioContext.resume();
@@ -476,35 +541,32 @@ export default function CalendarGrid() {
       compressor.connect(audioContext.destination);
 
       const audioStart = audioContext.currentTime + 0.05;
-      const nNotes = Math.max(1, layout.length);
-      const peak = Math.min(0.22, 0.65 / Math.sqrt(nNotes));
+      const holdDuration = SECONDS_PER_COLUMN * 0.9;
 
-      for (const n of layout) {
-        const t0 = audioStart + n.startCol * SECONDS_PER_COLUMN;
-        const span = Math.max(
-          SECONDS_PER_COLUMN * 0.1,
-          n.colSpan * SECONDS_PER_COLUMN
-        );
-        const holdDuration = Math.min(
-          span * 0.92,
-          totalDurationSeconds - n.startCol * SECONDS_PER_COLUMN
-        );
-        if (holdDuration <= 0.02) continue;
+      for (let col = 0; col < GRID_COLS; col++) {
+        const group = cellsByCol.get(col);
+        if (!group || group.length === 0) continue;
 
-        const osc = audioContext.createOscillator();
-        const gain = audioContext.createGain();
-        osc.type = "triangle";
-        osc.frequency.setValueAtTime(midiToFreq(n.midi), t0);
+        const t0 = audioStart + col * SECONDS_PER_COLUMN;
+        const n = group.length;
+        const peakEach = Math.min(0.2, 0.12 / Math.sqrt(n));
 
-        gain.gain.setValueAtTime(0, t0);
-        gain.gain.linearRampToValueAtTime(peak, t0 + 0.04);
-        gain.gain.setValueAtTime(peak, t0 + holdDuration - 0.05);
-        gain.gain.linearRampToValueAtTime(0, t0 + holdDuration);
+        for (const c of group) {
+          const osc = audioContext.createOscillator();
+          const gain = audioContext.createGain();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(midiToFreq(c.midi), t0);
 
-        osc.connect(gain);
-        gain.connect(compressor);
-        osc.start(t0);
-        osc.stop(t0 + holdDuration + 0.02);
+          gain.gain.setValueAtTime(0, t0);
+          gain.gain.linearRampToValueAtTime(peakEach, t0 + 0.04);
+          gain.gain.setValueAtTime(peakEach, t0 + holdDuration - 0.05);
+          gain.gain.linearRampToValueAtTime(0, t0 + holdDuration);
+
+          osc.connect(gain);
+          gain.connect(compressor);
+          osc.start(t0);
+          osc.stop(t0 + holdDuration + 0.02);
+        }
       }
 
       const tick = () => {
@@ -572,7 +634,22 @@ export default function CalendarGrid() {
       }
 
       const list = (payload.events as ApiEvent[]) ?? [];
-      const parsed: CalEvent[] = list.flatMap((e) => {
+      const parsed: CalEvent[] = list.flatMap((e): CalEvent[] => {
+        if (e.allDay) {
+          const start = parseGoogleAllDayYmd(String(e.start));
+          if (isNaN(start.getTime())) return [];
+          let end = e.end ? parseGoogleAllDayYmd(String(e.end)) : new Date(start);
+          if (!e.end || isNaN(end.getTime())) {
+            end = new Date(start);
+            end.setDate(end.getDate() + 1);
+          }
+          if (end.getTime() <= start.getTime()) {
+            end = new Date(start);
+            end.setDate(end.getDate() + 1);
+          }
+          return [{ id: e.id, title: e.title, start, end, allDay: true, link: e.link }];
+        }
+
         const start = toDate(e.start);
         let end = toDate(e.end);
         if (!start) return [];
@@ -580,7 +657,7 @@ export default function CalendarGrid() {
           end = new Date(start);
           end.setDate(start.getDate() + 1);
         }
-        return [{ id: e.id, title: e.title, start, end, allDay: e.allDay, link: e.link }];
+        return [{ id: e.id, title: e.title, start, end, allDay: false, link: e.link }];
       });
 
       setCalEvents(parsed);
