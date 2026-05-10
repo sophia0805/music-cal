@@ -18,21 +18,19 @@ type ApiEvent = {
 };
 
 const SECONDS_PER_COLUMN = 0.48;
-const PENTATONIC = [48, 50, 52, 55, 57, 60, 62, 64, 67, 69, 72, 74, 76, 79, 81, 84];
 const NOTE_COLORS = [
   "#f87171","#fb923c","#fbbf24","#a3e635",
   "#34d399","#22d3ee","#60a5fa","#a78bfa",
   "#f472b6","#e879f9","#94a3b8","#67e8f9",
 ];
 
-const KEY_WIDTH = 82;
+const KEY_WIDTH = 0;
 const ROW_HEIGHT = 36;
 const RULER_HEIGHT = 34;
 const PIXELS_PER_COL = 52;
 const GRID_COLS = 7;
 
 const RULER_FONT = '12px ui-monospace, monospace';
-const ROW_LABEL_FONT = '11px ui-monospace, monospace';
 const NOTE_LABEL_FONT = 'bold 11px ui-monospace, monospace';
 
 function fillTextClipped(
@@ -55,25 +53,18 @@ const yForWeekRow = (weekRow: number) => RULER_HEIGHT + weekRow * ROW_HEIGHT;
 const midiToFreq = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
 const noteColor = (midi: number) => NOTE_COLORS[midi % NOTE_COLORS.length];
 
-const COLUMN_MIDI: readonly number[] = [
-  PENTATONIC[0],
-  PENTATONIC[1],
-  PENTATONIC[2],
-  PENTATONIC[3],
-  PENTATONIC[4],
-  PENTATONIC[5],
-  PENTATONIC[6],
-];
-
-function midiForColumn(col: number): number {
-  const c = ((col % GRID_COLS) + GRID_COLS) % GRID_COLS;
-  return COLUMN_MIDI[c];
+function baseMidiFromWeekRow(weekRow: number, numWeekRows: number): number {
+  const hi = 84;
+  const lo = 48;
+  if (numWeekRows <= 1) return Math.round((hi + lo) / 2);
+  const r = Math.max(0, Math.min(numWeekRows - 1, weekRow));
+  const t = r / (numWeekRows - 1);
+  return Math.round(hi - t * (hi - lo));
 }
 
 const CHORD_STEPS = [0, 4, 7, 12, 16, 19];
 
-function chordVoiceMidi(col: number, voiceIndex: number): number {
-  const base = midiForColumn(col);
+function chordVoiceFromBase(base: number, voiceIndex: number): number {
   const n = CHORD_STEPS.length;
   const step = voiceIndex % n;
   const extraOct = Math.floor(voiceIndex / n);
@@ -114,7 +105,6 @@ function compareCellsSameColumn(a: LayoutCell, b: LayoutCell): number {
   );
 }
 
-/** Lower on the roll → lower chord voice (bass/root). */
 function compareCellsForChordVoicing(a: LayoutCell, b: LayoutCell): number {
   return (
     b.weekRow - a.weekRow ||
@@ -124,16 +114,20 @@ function compareCellsForChordVoicing(a: LayoutCell, b: LayoutCell): number {
   );
 }
 
-function assignChordVoicesByColumn(cells: LayoutCell[]): void {
-  const byCol = new Map<number, LayoutCell[]>();
+function assignChordMidiByCellHeight(cells: LayoutCell[], totalDays: number): void {
+  const numWeekRows = Math.max(1, Math.ceil(totalDays / GRID_COLS));
+  const byCell = new Map<string, LayoutCell[]>();
   for (const c of cells) {
-    if (!byCol.has(c.col)) byCol.set(c.col, []);
-    byCol.get(c.col)!.push(c);
+    const key = `${c.weekRow}-${c.col}`;
+    if (!byCell.has(key)) byCell.set(key, []);
+    byCell.get(key)!.push(c);
   }
-  for (const arr of byCol.values()) {
+  for (const arr of byCell.values()) {
     arr.sort(compareCellsForChordVoicing);
+    const first = arr[0];
+    const base = baseMidiFromWeekRow(first.weekRow, numWeekRows);
     arr.forEach((c, i) => {
-      c.midi = chordVoiceMidi(c.col, i);
+      c.midi = chordVoiceFromBase(base, i);
     });
   }
 }
@@ -219,7 +213,7 @@ function layoutRollNotes(
   return result;
 }
 
-function layoutRollCells(segments: LayoutNote[]): LayoutCell[] {
+function layoutRollCells(segments: LayoutNote[], totalDays: number): LayoutCell[] {
   const buckets = new Map<string, LayoutCell[]>();
 
   for (const seg of segments) {
@@ -255,7 +249,7 @@ function layoutRollCells(segments: LayoutNote[]): LayoutCell[] {
     const depth = arr.length;
     arr.forEach((c, i) => out.push({ ...c, stack: i, depth }));
   }
-  assignChordVoicesByColumn(out);
+  assignChordMidiByCellHeight(out, totalDays);
   return out;
 }
 
@@ -297,7 +291,6 @@ export default function CalendarGrid() {
     return () => window.removeEventListener("resize", upd);
   }, []);
 
-  // Roll mirrors the month grid: 7 weekday columns × week rows; playhead sweeps columns.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !gridInfo || !activeRange) return;
@@ -321,25 +314,24 @@ export default function CalendarGrid() {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
     const segments = layoutRollNotes(calEvents, activeRange, totalDays);
-    const cells = layoutRollCells(segments);
+    const cells = layoutRollCells(segments, totalDays);
     layoutRef.current = cells;
 
     ctx.fillStyle = "#101015";
     ctx.fillRect(0, 0, rollW, rollH);
 
-    // Column ruler (weekday headers — same order as FullCalendar)
     ctx.fillStyle = "#1a1a22";
-    ctx.fillRect(KEY_WIDTH, 0, rollW - KEY_WIDTH, RULER_HEIGHT);
+    ctx.fillRect(0, 0, rollW, RULER_HEIGHT);
     ctx.strokeStyle = "#ffffff18";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(KEY_WIDTH, RULER_HEIGHT - 0.5);
+    ctx.moveTo(0, RULER_HEIGHT - 0.5);
     ctx.lineTo(rollW, RULER_HEIGHT - 0.5);
     ctx.stroke();
 
     ctx.font = RULER_FONT;
     for (let c = 0; c < GRID_COLS; c++) {
-      const x = KEY_WIDTH + c * PIXELS_PER_COL;
+      const x = c * PIXELS_PER_COL;
       ctx.strokeStyle = c === 0 ? "#ffffff22" : "#ffffff0d";
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
@@ -358,41 +350,16 @@ export default function CalendarGrid() {
       ctx.restore();
     }
 
-    // Week row labels + grid cells
     for (let wr = 0; wr < numWeekRows; wr++) {
       const y = yForWeekRow(wr);
-      const firstIdx = wr * GRID_COLS;
-      const d0 = new Date(activeRange.start.getTime() + firstIdx * 86400000);
-      let isCurrentMonth = true;
-      if (calendarRef.current) {
-        const api = calendarRef.current.getApi();
-        const cur = api.view.currentStart;
-        isCurrentMonth =
-          d0.getMonth() === cur.getMonth() && d0.getFullYear() === cur.getFullYear();
-      }
-
-      ctx.fillStyle = isCurrentMonth ? "#2a2a38" : "#22222c";
-      ctx.fillRect(0, y, KEY_WIDTH, ROW_HEIGHT);
-      ctx.strokeStyle = "#00000055";
-      ctx.strokeRect(0.5, y + 0.5, KEY_WIDTH - 1, ROW_HEIGHT - 1);
-      ctx.fillStyle = isCurrentMonth ? "#c8c8dc" : "#7a7a8e";
-      ctx.font = ROW_LABEL_FONT;
-      const dateStr = `${d0.getMonth() + 1}/${d0.getDate()}`;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(1, y + 1, KEY_WIDTH - 2, ROW_HEIGHT - 2);
-      ctx.clip();
-      fillTextClipped(ctx, dateStr, 6, y + ROW_HEIGHT / 2 + 4, KEY_WIDTH - 12);
-      ctx.restore();
-
       ctx.fillStyle = wr % 2 === 0 ? "#14141c" : "#12121a";
-      ctx.fillRect(KEY_WIDTH, y, rollW - KEY_WIDTH, ROW_HEIGHT);
+      ctx.fillRect(0, y, rollW, ROW_HEIGHT);
     }
 
     ctx.strokeStyle = "#ffffff0a";
     ctx.lineWidth = 1;
     for (let c = 1; c < GRID_COLS; c++) {
-      const x = KEY_WIDTH + c * PIXELS_PER_COL;
+      const x = c * PIXELS_PER_COL;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, RULER_HEIGHT);
       ctx.lineTo(x + 0.5, rollH);
@@ -403,7 +370,7 @@ export default function CalendarGrid() {
     for (let wr = 0; wr <= numWeekRows; wr++) {
       const y = RULER_HEIGHT + wr * ROW_HEIGHT;
       ctx.beginPath();
-      ctx.moveTo(KEY_WIDTH, y + 0.5);
+      ctx.moveTo(0, y + 0.5);
       ctx.lineTo(rollW, y + 0.5);
       ctx.stroke();
     }
@@ -416,7 +383,7 @@ export default function CalendarGrid() {
         a.stack - b.stack
     );
     for (const c of sortedCells) {
-      const cellLeft = KEY_WIDTH + c.col * PIXELS_PER_COL + 1;
+      const cellLeft = c.col * PIXELS_PER_COL + 1;
       const cellW = PIXELS_PER_COL - 2;
       const yBase = yForWeekRow(c.weekRow);
       const inner = ROW_HEIGHT - cellPad * 2;
@@ -448,7 +415,7 @@ export default function CalendarGrid() {
     }
 
     if (playheadColumn !== null) {
-      const px = KEY_WIDTH + playheadColumn * PIXELS_PER_COL;
+      const px = playheadColumn * PIXELS_PER_COL;
       const grad = ctx.createLinearGradient(px - 16, 0, px + 16, 0);
       grad.addColorStop(0, "#fffc0022");
       grad.addColorStop(0.5, "#fffc0088");
@@ -469,7 +436,7 @@ export default function CalendarGrid() {
     if (!isPlaying || playheadColumn === null) return;
     const el = rollScrollRef.current;
     if (!el) return;
-    const px = KEY_WIDTH + playheadColumn * PIXELS_PER_COL;
+    const px = playheadColumn * PIXELS_PER_COL;
     const target = px - el.clientWidth * 0.38;
     el.scrollLeft = Math.max(0, Math.min(target, el.scrollWidth - el.clientWidth));
   }, [isPlaying, playheadColumn]);
@@ -483,7 +450,7 @@ export default function CalendarGrid() {
     );
     const totalDurationSeconds = GRID_COLS * SECONDS_PER_COLUMN;
     const segments = layoutRollNotes(calEvents, activeRange, totalViewDays);
-    const cells = layoutRollCells(segments);
+    const cells = layoutRollCells(segments, totalViewDays);
     const cellsByCol = new Map<number, LayoutCell[]>();
     for (const c of cells) {
       if (!cellsByCol.has(c.col)) cellsByCol.set(c.col, []);
@@ -594,7 +561,7 @@ export default function CalendarGrid() {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      if (x < KEY_WIDTH || y < RULER_HEIGHT) return;
+      if (y < RULER_HEIGHT) return;
 
       const cellPad = 4;
       const sorted = [...layoutRef.current].sort(
@@ -604,7 +571,7 @@ export default function CalendarGrid() {
           b.stack - a.stack
       );
       for (const c of sorted) {
-        const cellLeft = KEY_WIDTH + c.col * PIXELS_PER_COL + 1;
+        const cellLeft = c.col * PIXELS_PER_COL + 1;
         const cellW = PIXELS_PER_COL - 2;
         const yBase = yForWeekRow(c.weekRow);
         const inner = ROW_HEIGHT - cellPad * 2;
