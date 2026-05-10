@@ -1,12 +1,12 @@
 "use client";
 
-import dayGridPlugin from "@fullcalendar/daygrid";
-import interactionPlugin from "@fullcalendar/interaction";
 import type { EventInput } from "@fullcalendar/core";
+import type { EventSourceFunc, EventClickArg } from "@fullcalendar/core";
 import FullCalendar from "@fullcalendar/react";
+import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
-import type { EventClickArg, EventSourceFunc } from "@fullcalendar/core";
-import { useCallback, useRef, useState } from "react";
+import interactionPlugin from "@fullcalendar/interaction";
+import { useCallback, useRef, useState, useEffect, type PointerEvent } from "react";
 
 type ApiEvent = {
   id: string;
@@ -17,354 +17,670 @@ type ApiEvent = {
   link?: string;
 };
 
-type ParsedEvent = {
+const SECONDS_PER_COLUMN = 0.48;
+const PENTATONIC = [48, 50, 52, 55, 57, 60, 62, 64, 67, 69, 72, 74, 76, 79, 81, 84];
+const NOTE_COLORS = [
+  "#f87171","#fb923c","#fbbf24","#a3e635",
+  "#34d399","#22d3ee","#60a5fa","#a78bfa",
+  "#f472b6","#e879f9","#94a3b8","#67e8f9",
+];
+
+const KEY_WIDTH = 82;
+const ROW_HEIGHT = 36;
+const RULER_HEIGHT = 34;
+const PIXELS_PER_COL = 52;
+const GRID_COLS = 7;
+
+const RULER_FONT = '12px ui-monospace, monospace';
+const ROW_LABEL_FONT = '11px ui-monospace, monospace';
+const NOTE_LABEL_FONT = 'bold 11px ui-monospace, monospace';
+
+function fillTextClipped(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number
+) {
+  if (maxWidth <= 0) return;
+  let t = text;
+  while (t.length > 0 && ctx.measureText(t).width > maxWidth) {
+    t = t.slice(0, -1);
+  }
+  if (t.length > 0) ctx.fillText(t, x, y);
+}
+
+const yForWeekRow = (weekRow: number) => RULER_HEIGHT + weekRow * ROW_HEIGHT;
+
+const midiToFreq = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
+const midiFromDayIndex = (dayIndex: number) => PENTATONIC[dayIndex % PENTATONIC.length];
+const noteColor = (midi: number) => NOTE_COLORS[midi % NOTE_COLORS.length];
+
+function pentatonicIndexFromMidi(midi: number): number {
+  const i = PENTATONIC.indexOf(midi);
+  if (i !== -1) return i;
+  let best = 0;
+  let bestDist = Infinity;
+  for (let j = 0; j < PENTATONIC.length; j++) {
+    const d = Math.abs(PENTATONIC[j] - midi);
+    if (d < bestDist) {
+      bestDist = d;
+      best = j;
+    }
+  }
+  return best;
+}
+
+type CalEvent = {
+  id: string;
+  title: string;
   start: Date;
-  end: Date | null;
+  end: Date;
+  allDay: boolean;
+  link?: string;
 };
 
-const NOTE_DURATION = 0.22;
-const NOTE_GAP = 0.04;
+type ActiveRange = { start: Date; end: Date };
+
+type LayoutNote = CalEvent & {
+  weekRow: number;
+  startCol: number;
+  colSpan: number;
+  midi: number;
+};
+
+type LayoutCell = CalEvent & {
+  weekRow: number;
+  col: number;
+  midi: number;
+  stack: number;
+  depth: number;
+};
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function dayIndexBounds(
+  startMs: number,
+  endMs: number,
+  viewStartMs: number,
+  totalDays: number
+): { startD: number; endD: number } | null {
+  const dayMs = 86400000;
+  const startD = Math.floor((startMs - viewStartMs) / dayMs);
+  const endD = Math.ceil((endMs - viewStartMs) / dayMs);
+  const s = Math.max(0, startD);
+  const e = Math.min(totalDays, endD);
+  if (e <= s) return null;
+  return { startD: s, endD: e };
+}
+
+function rowSegments(
+  startD: number,
+  endD: number
+): Array<{ weekRow: number; startCol: number; colSpan: number }> {
+  const segments: Array<{ weekRow: number; startCol: number; colSpan: number }> = [];
+  let i = startD;
+  while (i < endD) {
+    const weekRow = Math.floor(i / GRID_COLS);
+    const startCol = i % GRID_COLS;
+    const rowEnd = (weekRow + 1) * GRID_COLS;
+    const segEnd = Math.min(endD, rowEnd);
+    const colSpan = segEnd - i;
+    segments.push({ weekRow, startCol, colSpan });
+    i = segEnd;
+  }
+  return segments;
+}
+
+function layoutRollNotes(
+  events: CalEvent[],
+  activeRange: ActiveRange,
+  totalDays: number
+): LayoutNote[] {
+  const viewStart = activeRange.start.getTime();
+  const sorted = [...events].sort((a, b) => a.start.getTime() - b.start.getTime());
+  const result: LayoutNote[] = [];
+
+  sorted.forEach((ev, slotIndex) => {
+    const bounds = dayIndexBounds(ev.start.getTime(), ev.end.getTime(), viewStart, totalDays);
+    if (!bounds) return;
+    const { startD, endD } = bounds;
+    const segments = rowSegments(startD, endD);
+    const dayKey = startD;
+
+    segments.forEach((seg) => {
+      const baseIdx = pentatonicIndexFromMidi(midiFromDayIndex(dayKey));
+      const pitchRow = (baseIdx + slotIndex + seg.weekRow) % PENTATONIC.length;
+      const midi = PENTATONIC[pitchRow];
+
+      result.push({
+        ...ev,
+        weekRow: seg.weekRow,
+        startCol: seg.startCol,
+        colSpan: seg.colSpan,
+        midi,
+      });
+    });
+  });
+
+  return result;
+}
+
+function layoutRollCells(segments: LayoutNote[]): LayoutCell[] {
+  const buckets = new Map<string, LayoutCell[]>();
+
+  for (const seg of segments) {
+    for (let k = 0; k < seg.colSpan; k++) {
+      const col = seg.startCol + k;
+      const key = `${seg.weekRow}-${col}`;
+      const cell: LayoutCell = {
+        id: seg.id,
+        title: seg.title,
+        start: seg.start,
+        end: seg.end,
+        allDay: seg.allDay,
+        link: seg.link,
+        weekRow: seg.weekRow,
+        col,
+        midi: seg.midi,
+        stack: 0,
+        depth: 1,
+      };
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key)!.push(cell);
+    }
+  }
+
+  const out: LayoutCell[] = [];
+  for (const arr of buckets.values()) {
+    arr.sort(
+      (a, b) =>
+        a.start.getTime() - b.start.getTime() ||
+        a.id.localeCompare(b.id) ||
+        a.col - b.col
+    );
+    const depth = arr.length;
+    arr.forEach((c, i) => out.push({ ...c, stack: i, depth }));
+  }
+  return out;
+}
 
 export default function CalendarGrid() {
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [eventsForSound, setEventsForSound] = useState<EventInput[]>([]);
+  const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playheadProgress, setPlayheadProgress] = useState(0);
+  const [playheadColumn, setPlayheadColumn] = useState<number | null>(null);
+  const [activeRange, setActiveRange] = useState<ActiveRange | null>(null);
+
+  const calendarRef = useRef<FullCalendar>(null);
   const stopPlaybackRef = useRef<(() => void) | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rollScrollRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<LayoutCell[]>([]);
 
-  const toDate = (value: Date | string | undefined): Date | null => {
-    if (!value) {
-      return null;
+  const toDate = (v: unknown): Date | null => {
+    if (v == null) return null;
+    const d = v instanceof Date ? v : new Date(v as string | number);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const gridInfo = activeRange
+    ? (() => {
+        const totalMs = activeRange.end.getTime() - activeRange.start.getTime();
+        const totalDays = Math.round(totalMs / (1000 * 60 * 60 * 24));
+        const weeks = totalDays / 7;
+        return { totalDays, weeks, cols: 7, rows: weeks };
+      })()
+    : null;
+
+  const [dpr, setDpr] = useState(1);
+
+  useEffect(() => {
+    const upd = () => setDpr(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
+    upd();
+    window.addEventListener("resize", upd);
+    return () => window.removeEventListener("resize", upd);
+  }, []);
+
+  // Roll mirrors the month grid: 7 weekday columns × week rows; playhead sweeps columns.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !gridInfo || !activeRange) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const totalDays = gridInfo.totalDays;
+    const numWeekRows = Math.max(1, Math.ceil(totalDays / GRID_COLS));
+    const rollW = KEY_WIDTH + GRID_COLS * PIXELS_PER_COL;
+    const rollH = RULER_HEIGHT + numWeekRows * ROW_HEIGHT;
+    const scale = dpr;
+
+    const firstDay =
+      (calendarRef.current?.getApi().getOption("firstDay") as number | undefined) ?? 0;
+
+    canvas.width = Math.round(rollW * scale);
+    canvas.height = Math.round(rollH * scale);
+    canvas.style.width = `${rollW}px`;
+    canvas.style.height = `${rollH}px`;
+
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+
+    const segments = layoutRollNotes(calEvents, activeRange, totalDays);
+    const cells = layoutRollCells(segments);
+    layoutRef.current = cells;
+
+    ctx.fillStyle = "#101015";
+    ctx.fillRect(0, 0, rollW, rollH);
+
+    // Column ruler (weekday headers — same order as FullCalendar)
+    ctx.fillStyle = "#1a1a22";
+    ctx.fillRect(KEY_WIDTH, 0, rollW - KEY_WIDTH, RULER_HEIGHT);
+    ctx.strokeStyle = "#ffffff18";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(KEY_WIDTH, RULER_HEIGHT - 0.5);
+    ctx.lineTo(rollW, RULER_HEIGHT - 0.5);
+    ctx.stroke();
+
+    ctx.font = RULER_FONT;
+    for (let c = 0; c < GRID_COLS; c++) {
+      const x = KEY_WIDTH + c * PIXELS_PER_COL;
+      ctx.strokeStyle = c === 0 ? "#ffffff22" : "#ffffff0d";
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, 0);
+      ctx.lineTo(x + 0.5, RULER_HEIGHT);
+      ctx.stroke();
+
+      const name = DAY_NAMES[(firstDay + c) % 7];
+      ctx.fillStyle = "#b4b4c8";
+      const pad = 6;
+      const colW = PIXELS_PER_COL - pad * 2;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + 1, 1, PIXELS_PER_COL - 2, RULER_HEIGHT - 2);
+      ctx.clip();
+      fillTextClipped(ctx, name, x + pad, RULER_HEIGHT - 8, colW);
+      ctx.restore();
     }
-    const date = value instanceof Date ? value : new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  };
 
-  const noteFromDate = (date: Date) => {
-    const day = date.getDate();
-    const baseMaxMidi = 72;
-    const baseMinMidi = 48;
-    const midi =
-      baseMinMidi +
-      Math.round(((day - 1) / 30) * (baseMaxMidi - baseMinMidi));
-    const allowedOffsets = [0, 2, 4, 7, 9];
-    const pitchClass = midi % 12;
-    const octave = Math.floor(midi / 12);
-    const closest = allowedOffsets.reduce((prev, curr) =>
-      Math.abs(curr - pitchClass) < Math.abs(prev - pitchClass) ? curr : prev,
+    // Week row labels + grid cells
+    for (let wr = 0; wr < numWeekRows; wr++) {
+      const y = yForWeekRow(wr);
+      const firstIdx = wr * GRID_COLS;
+      const d0 = new Date(activeRange.start.getTime() + firstIdx * 86400000);
+      let isCurrentMonth = true;
+      if (calendarRef.current) {
+        const api = calendarRef.current.getApi();
+        const cur = api.view.currentStart;
+        isCurrentMonth =
+          d0.getMonth() === cur.getMonth() && d0.getFullYear() === cur.getFullYear();
+      }
+
+      ctx.fillStyle = isCurrentMonth ? "#2a2a38" : "#22222c";
+      ctx.fillRect(0, y, KEY_WIDTH, ROW_HEIGHT);
+      ctx.strokeStyle = "#00000055";
+      ctx.strokeRect(0.5, y + 0.5, KEY_WIDTH - 1, ROW_HEIGHT - 1);
+      ctx.fillStyle = isCurrentMonth ? "#c8c8dc" : "#7a7a8e";
+      ctx.font = ROW_LABEL_FONT;
+      const dateStr = `${d0.getMonth() + 1}/${d0.getDate()}`;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(1, y + 1, KEY_WIDTH - 2, ROW_HEIGHT - 2);
+      ctx.clip();
+      fillTextClipped(ctx, dateStr, 6, y + ROW_HEIGHT / 2 + 4, KEY_WIDTH - 12);
+      ctx.restore();
+
+      ctx.fillStyle = wr % 2 === 0 ? "#14141c" : "#12121a";
+      ctx.fillRect(KEY_WIDTH, y, rollW - KEY_WIDTH, ROW_HEIGHT);
+    }
+
+    ctx.strokeStyle = "#ffffff0a";
+    ctx.lineWidth = 1;
+    for (let c = 1; c < GRID_COLS; c++) {
+      const x = KEY_WIDTH + c * PIXELS_PER_COL;
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, RULER_HEIGHT);
+      ctx.lineTo(x + 0.5, rollH);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = "#ffffff08";
+    for (let wr = 0; wr <= numWeekRows; wr++) {
+      const y = RULER_HEIGHT + wr * ROW_HEIGHT;
+      ctx.beginPath();
+      ctx.moveTo(KEY_WIDTH, y + 0.5);
+      ctx.lineTo(rollW, y + 0.5);
+      ctx.stroke();
+    }
+
+    const cellPad = 4;
+    const sortedCells = [...cells].sort(
+      (a, b) =>
+        a.weekRow - b.weekRow ||
+        a.col - b.col ||
+        a.stack - b.stack
     );
-    const quantizedMidi = octave * 12 + closest;
-    return 440 * Math.pow(2, (quantizedMidi - 69) / 12);
-  };
+    for (const c of sortedCells) {
+      const cellLeft = KEY_WIDTH + c.col * PIXELS_PER_COL + 1;
+      const cellW = PIXELS_PER_COL - 2;
+      const yBase = yForWeekRow(c.weekRow);
+      const inner = ROW_HEIGHT - cellPad * 2;
+      const slotH = inner / c.depth;
+      const y = yBase + cellPad + c.stack * slotH;
+      const h = Math.max(3, slotH - 1);
+      const color = noteColor(c.midi);
+
+      ctx.globalAlpha = 0.92;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect(cellLeft, y, cellW, h, 3);
+      ctx.fill();
+
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(cellLeft + 1, y + 1, cellW - 2, 2);
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = "#0a0a10cc";
+      ctx.font = NOTE_LABEL_FONT;
+      const label = c.title || "(No title)";
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(cellLeft, y, cellW, h, 3);
+      ctx.clip();
+      fillTextClipped(ctx, label, cellLeft + 4, y + h - 5, Math.max(0, cellW - 10));
+      ctx.restore();
+    }
+
+    if (playheadColumn !== null) {
+      const px = KEY_WIDTH + playheadColumn * PIXELS_PER_COL;
+      const grad = ctx.createLinearGradient(px - 16, 0, px + 16, 0);
+      grad.addColorStop(0, "#fffc0022");
+      grad.addColorStop(0.5, "#fffc0088");
+      grad.addColorStop(1, "#fffc0022");
+      ctx.fillStyle = grad;
+      ctx.fillRect(px - 16, 0, 32, rollH);
+
+      ctx.strokeStyle = "#fffef0";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(px + 0.5, 0);
+      ctx.lineTo(px + 0.5, rollH);
+      ctx.stroke();
+    }
+  }, [calEvents, activeRange, gridInfo, playheadColumn, dpr]);
+
+  useEffect(() => {
+    if (!isPlaying || playheadColumn === null) return;
+    const el = rollScrollRef.current;
+    if (!el) return;
+    const px = KEY_WIDTH + playheadColumn * PIXELS_PER_COL;
+    const target = px - el.clientWidth * 0.38;
+    el.scrollLeft = Math.max(0, Math.min(target, el.scrollWidth - el.clientWidth));
+  }, [isPlaying, playheadColumn]);
 
   const playCalendarSong = useCallback(() => {
-    if (isPlaying || eventsForSound.length === 0) {
-      return;
-    }
+    if (isPlaying || calEvents.length === 0 || !activeRange) return;
+
+    const viewStart = activeRange.start;
+    const totalViewDays = Math.round(
+      (activeRange.end.getTime() - viewStart.getTime()) / 86400000
+    );
+    const totalDurationSeconds = GRID_COLS * SECONDS_PER_COLUMN;
+    const layout = layoutRollNotes(calEvents, activeRange, totalViewDays);
+
+    type WindowWithWebKitAudio = Window & { webkitAudioContext?: typeof AudioContext };
     const AudioContextCtor =
-      window.AudioContext ||
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
+      window.AudioContext || (window as WindowWithWebKitAudio).webkitAudioContext;
     if (!AudioContextCtor) {
-      setLoadError("Web Audio is not supported in this browser.");
+      setLoadError("Web Audio not supported.");
       return;
     }
 
-    setLoadError(null);
-    const audioContext = new AudioContextCtor();
-    const now = audioContext.currentTime + 0.05;
-    const sorted: ParsedEvent[] = [...eventsForSound]
-      .map((event) => ({
-        start: toDate(event.start as Date | string | undefined),
-        end: toDate(event.end as Date | string | undefined),
-      }))
-      .filter((event): event is ParsedEvent => event.start !== null)
-      .sort((a, b) => a.start.getTime() - b.start.getTime());
-
-    if (sorted.length === 0) {
-      void audioContext.close();
-      return;
-    }
-
-    sorted.forEach((event, index) => {
-      const startTime = now + index * (NOTE_DURATION + NOTE_GAP);
-      const frequency = noteFromDate(event.start);
-      const oscillator = audioContext.createOscillator();
-      const gain = audioContext.createGain();
-      oscillator.type = "triangle";
-      oscillator.frequency.setValueAtTime(frequency, startTime);
-      gain.gain.setValueAtTime(0.0001, startTime);
-      gain.gain.exponentialRampToValueAtTime(0.2, startTime + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + NOTE_DURATION);
-      oscillator.connect(gain);
-      gain.connect(audioContext.destination);
-      oscillator.start(startTime);
-      oscillator.stop(startTime + NOTE_DURATION + 0.02);
-    });
-
-    const totalDuration = sorted.length * (NOTE_DURATION + NOTE_GAP) + 0.2;
-    const totalDurationMs = totalDuration * 1000;
-    const playbackStartMs = performance.now();
-    const finishPlayback = () => {
-      setIsPlaying(false);
-      setPlayheadProgress(0);
-      if (animationFrameRef.current != null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-      stopPlaybackRef.current = null;
-      void audioContext.close();
-    };
-
-    const tick = () => {
-      const elapsedMs = performance.now() - playbackStartMs;
-      const progress = Math.min(1, elapsedMs / totalDurationMs);
-      setPlayheadProgress(progress);
-      if (progress < 1) {
-        animationFrameRef.current = window.requestAnimationFrame(tick);
-      }
-    };
-
-    setPlayheadProgress(0);
-    animationFrameRef.current = window.requestAnimationFrame(tick);
-
-    const finishTimer = window.setTimeout(() => {
-      finishPlayback();
-    }, totalDurationMs);
-
-    stopPlaybackRef.current = () => {
-      window.clearTimeout(finishTimer);
-      finishPlayback();
-    };
+    rollScrollRef.current?.scrollTo({ left: 0, behavior: "smooth" });
     setIsPlaying(true);
-  }, [eventsForSound, isPlaying]);
 
-  const fetchEvents: EventSourceFunc = useCallback(
-    async (info, successCallback, failureCallback) => {
-      setLoadError(null);
+    const run = async () => {
+      const audioContext = new AudioContextCtor();
+      let cancelled = false;
+
+      const finishPlayback = () => {
+        cancelled = true;
+        setIsPlaying(false);
+        setPlayheadColumn(null);
+        if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+        stopPlaybackRef.current = null;
+        void audioContext.close();
+      };
+
+      stopPlaybackRef.current = finishPlayback;
+
       try {
-        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const params = new URLSearchParams({
-          timeMin: info.startStr,
-          timeMax: info.endStr,
-          timeZone,
-        });
-        const response = await fetch(`/api/calendar?${params.toString()}`, {
-          credentials: "include",
-        });
+        await audioContext.resume();
+      } catch {
+        setLoadError("Could not start audio. Try again.");
+        finishPlayback();
+        return;
+      }
 
-        const payload = (await response.json().catch(() => ({}))) as {
-          error?: string;
-          hint?: string;
-          detail?: string;
-          events?: ApiEvent[];
-        };
+      if (cancelled) return;
 
-        if (!response.ok) {
-          const msg =
-            payload.hint ??
-            payload.detail ??
-            payload.error ??
-            `Could not load calendar (HTTP ${response.status}).`;
-          setLoadError(msg);
-          successCallback([]);
-          return;
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -18;
+      compressor.knee.value = 6;
+      compressor.ratio.value = 4;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+      compressor.connect(audioContext.destination);
+
+      const audioStart = audioContext.currentTime + 0.05;
+      const nNotes = Math.max(1, layout.length);
+      const peak = Math.min(0.22, 0.65 / Math.sqrt(nNotes));
+
+      for (const n of layout) {
+        const t0 = audioStart + n.startCol * SECONDS_PER_COLUMN;
+        const span = Math.max(
+          SECONDS_PER_COLUMN * 0.1,
+          n.colSpan * SECONDS_PER_COLUMN
+        );
+        const holdDuration = Math.min(
+          span * 0.92,
+          totalDurationSeconds - n.startCol * SECONDS_PER_COLUMN
+        );
+        if (holdDuration <= 0.02) continue;
+
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(midiToFreq(n.midi), t0);
+
+        gain.gain.setValueAtTime(0, t0);
+        gain.gain.linearRampToValueAtTime(peak, t0 + 0.04);
+        gain.gain.setValueAtTime(peak, t0 + holdDuration - 0.05);
+        gain.gain.linearRampToValueAtTime(0, t0 + holdDuration);
+
+        osc.connect(gain);
+        gain.connect(compressor);
+        osc.start(t0);
+        osc.stop(t0 + holdDuration + 0.02);
+      }
+
+      const tick = () => {
+        const elapsed = audioContext.currentTime - audioStart;
+        const progress = Math.min(1, elapsed / totalDurationSeconds);
+        const col = Math.min(GRID_COLS, elapsed / SECONDS_PER_COLUMN);
+        setPlayheadColumn(col);
+        if (progress < 1) {
+          animationFrameRef.current = window.requestAnimationFrame(tick);
+        } else {
+          finishPlayback();
         }
+      };
 
-        const list = payload.events ?? [];
-        const calendarEvents: EventInput[] = list.map((e) => ({
-          id: e.id,
-          title: e.title,
-          start: e.start,
-          end: e.end,
-          allDay: e.allDay,
-          extendedProps: { link: e.link },
-        }));
-        setEventsForSound(calendarEvents);
-        successCallback(calendarEvents);
-         } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Could not load calendar.";
-        setLoadError(message);
-        failureCallback(err as Error);
+      animationFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    void run();
+  }, [calEvents, isPlaying, activeRange]);
+
+  const onRollPointerDown = useCallback(
+    (e: PointerEvent<HTMLCanvasElement>) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      if (x < KEY_WIDTH || y < RULER_HEIGHT) return;
+
+      const cellPad = 4;
+      const sorted = [...layoutRef.current].sort(
+        (a, b) =>
+          b.weekRow - a.weekRow ||
+          b.col - a.col ||
+          b.stack - a.stack
+      );
+      for (const c of sorted) {
+        const cellLeft = KEY_WIDTH + c.col * PIXELS_PER_COL + 1;
+        const cellW = PIXELS_PER_COL - 2;
+        const yBase = yForWeekRow(c.weekRow);
+        const inner = ROW_HEIGHT - cellPad * 2;
+        const slotH = inner / c.depth;
+        const y0 = yBase + cellPad + c.stack * slotH;
+        const h = Math.max(3, slotH - 1);
+        if (x >= cellLeft && x <= cellLeft + cellW && y >= y0 && y <= y0 + h) {
+          if (c.link) window.open(c.link, "_blank", "noopener,noreferrer");
+          break;
+        }
       }
     },
-    [],
+    []
   );
+
+  const fetchEvents: EventSourceFunc = useCallback(async (info, successCallback, failureCallback) => {
+    setLoadError(null);
+    try {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const params = new URLSearchParams({ timeMin: info.startStr, timeMax: info.endStr, timeZone });
+      const response = await fetch(`/api/calendar?${params.toString()}`, { credentials: "include" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setLoadError(payload.hint || payload.error || "Failed to load.");
+        successCallback([]);
+        return;
+      }
+
+      const list = (payload.events as ApiEvent[]) ?? [];
+      const parsed: CalEvent[] = list.flatMap((e) => {
+        const start = toDate(e.start);
+        let end = toDate(e.end);
+        if (!start) return [];
+        if (!end || end <= start) {
+          end = new Date(start);
+          end.setDate(start.getDate() + 1);
+        }
+        return [{ id: e.id, title: e.title, start, end, allDay: e.allDay, link: e.link }];
+      });
+
+      setCalEvents(parsed);
+
+      const fcEvents: EventInput[] = list.map((e) => ({
+        id: e.id, title: e.title, start: e.start, end: e.end,
+        allDay: e.allDay, extendedProps: { link: e.link },
+      }));
+      successCallback(fcEvents);
+    } catch (err) {
+      setLoadError("Could not load calendar.");
+      failureCallback(err as Error);
+    }
+  }, []);
+
   const onEventClick = useCallback((info: EventClickArg) => {
     info.jsEvent.preventDefault();
     const link = info.event.extendedProps.link as string | undefined;
-    if (link) {
-      window.open(link, "_blank", "noopener,noreferrer");
-    }
+    if (link) window.open(link, "_blank", "noopener,noreferrer");
   }, []);
+
   return (
     <div className="w-full rounded-xl border border-zinc-200/70 bg-white text-zinc-800">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200/70 px-4 py-3">
-        <p className="text-sm text-zinc-600">
-          Play your schedule like a piano roll: higher rows, higher notes.
+        <p className="text-sm text-zinc-500 font-mono tracking-tight">
+          Roll matches the calendar grid: 7 weekday columns × week rows. Play sweeps Sun→Sat — every
+          Sunday lines up in one column and sounds together. Click a block to open the event.
         </p>
         <div className="flex gap-2">
           <button
             type="button"
             onClick={playCalendarSong}
-            disabled={isPlaying || eventsForSound.length === 0}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={isPlaying || calEvents.length === 0}
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
           >
-            {isPlaying ? "Playing..." : "Play Calendar Song"}
+            {isPlaying ? "Playing..." : "▶ Play"}
           </button>
           <button
             type="button"
             onClick={() => stopPlaybackRef.current?.()}
             disabled={!isPlaying}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
           >
-            Stop
+            ■ Stop
           </button>
         </div>
       </div>
-      {loadError ? (
-        <div
-          className="border-b border-amber-200/70 bg-amber-50/70 px-4 py-3 text-sm text-amber-900"
-          role="alert"
-        >
+
+      {loadError && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
           {loadError}
         </div>
-      ) : null}
-      <div className="google-calendar-shell relative min-h-[640px] w-full bg-white p-2.5 md:p-3">
-        {isPlaying ? (
-          <div
-            className="calendar-playhead"
-            style={{ left: `${playheadProgress * 100}%` }}
-            aria-hidden
+      )}
+
+      <div className="relative w-full bg-[#0f0f14]">
+        <div
+          ref={rollScrollRef}
+          className="max-h-[min(88vh,860px)] w-full overflow-x-auto overflow-y-auto overscroll-x-contain"
+        >
+          <canvas
+            ref={canvasRef}
+            className="block max-w-none touch-pan-x"
+            onPointerDown={onRollPointerDown}
+            role="img"
+            aria-label="Calendar events as a piano roll"
           />
-        ) : null}
+        </div>
+      </div>
+
+      <div className="fc-shell relative w-full bg-white p-2.5 md:p-3">
         <FullCalendar
-          plugins={[
-            dayGridPlugin,
-            timeGridPlugin,
-            interactionPlugin,
-          ]}
+          ref={calendarRef}
+          plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
           initialView="dayGridMonth"
           headerToolbar={{
             left: "prev,next today",
             center: "title",
             right: "dayGridMonth,timeGridWeek",
           }}
-          buttonText={{
-            month: "Month",
-            week: "Week",
-          }}
           height="auto"
-          contentHeight="auto"
           dayMaxEvents={3}
           nowIndicator
-          slotMinTime="06:00:00"
-          slotMaxTime="22:00:00"
           events={fetchEvents}
           eventClick={onEventClick}
-          eventTimeFormat={{
-            hour: "numeric",
-            minute: "2-digit",
-            meridiem: "short",
-          }}
-          slotLabelFormat={{
-            hour: "numeric",
-            minute: "2-digit",
-            meridiem: "short",
-          }}
-          dayHeaderFormat={{ weekday: "short" }}
-          titleFormat={{ year: "numeric", month: "long" }}
-          firstDay={0}
           editable={false}
           selectable={false}
+          datesSet={(arg) => {
+            setActiveRange({ start: arg.view.activeStart, end: arg.view.activeEnd });
+          }}
         />
       </div>
+
       <style jsx global>{`
-        .google-calendar-shell .fc {
-          --fc-border-color:rgb(236, 236, 240);
-          --fc-button-bg-color:rgb(255, 255, 255);
-          --fc-button-border-color:rgb(226, 228, 234);
-          --fc-button-text-color:rgb(84, 55, 90);
-          --fc-button-hover-bg-color:rgb(248, 250, 252);
-          --fc-button-hover-border-color:rgb(213, 218, 227);
-          --fc-button-active-bg-color:rgb(230, 234, 238);
-          --fc-button-active-border-color:rgb(213, 218, 227);
+        .fc-shell .fc {
+          --fc-border-color: rgb(236, 236, 240);
           --fc-today-bg-color: rgba(15, 23, 42, 0.04);
-          --fc-event-bg-color:rgb(114, 79, 114);
-          --fc-event-border-color:rgb(99, 77, 105);
-          --fc-page-bg-color: #ffffff;
-          --fc-neutral-bg-color: #ffffff;
+          --fc-event-bg-color: rgb(114, 79, 114);
           font-family: inherit;
-          font-size: 0.875rem;
         }
-        .google-calendar-shell .fc .fc-button {
-          border-radius: 10px;
-          font-weight: 500;
-          text-transform: capitalize;
-          padding: 0.4em 0.7em;
-          box-shadow: none;
-        }
-        .google-calendar-shell .fc .fc-button-primary:not(:disabled).fc-button-active,
-        .google-calendar-shell .fc .fc-button-primary:not(:disabled):active {
-          background-color: var(--fc-button-active-bg-color);
-          border-color: var(--fc-button-active-border-color);
-          color: var(--fc-button-text-color);
-        }
-        .google-calendar-shell .fc .fc-toolbar-title {
-          font-size: 1.18rem;
-          font-weight: 600;
-          letter-spacing: -0.02em;
-          color:rgb(88, 43, 94);
-        }
-        .google-calendar-shell .fc .fc-col-header-cell-cushion {
-          font-weight: 500;
-          color:rgb(109, 82, 122);
-          text-decoration: none;
-        }
-        .google-calendar-shell .fc .fc-timegrid-slot-label {
-          font-size: 0.75rem;
-          color: #9ca3af;
-        }
-        .google-calendar-shell .fc .fc-event-main {
-          color: #f8fafc;
-        }
-        .google-calendar-shell .fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {
-          color: #111827;
-          font-weight: 600;
-        }
-        .google-calendar-shell .fc .fc-day-other .fc-daygrid-day-number {
-          color: #c0c4cc;
-        }
-        .google-calendar-shell .fc .fc-scrollgrid {
-          min-height: 560px;
-          border-radius: 14px;
-          overflow: hidden;
-          background: #ffffff;
-        }
-        .google-calendar-shell .fc .fc-view-harness,
-        .google-calendar-shell .fc .fc-scroller,
-        .google-calendar-shell .fc .fc-daygrid-body,
-        .google-calendar-shell .fc .fc-timegrid-body {
-          background: #ffffff;
-        }
-        .google-calendar-shell .calendar-playhead {
-          position: absolute;
-          top: 0.625rem;
-          bottom: 0.625rem;
-          width: 2px;
-          background: linear-gradient(
-            to bottom,
-            rgba(168, 85, 247, 0.95),
-            rgba(236, 72, 153, 0.85)
-          );
-          box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5), 0 0 14px rgba(168, 85, 247, 0.5);
-          border-radius: 9999px;
-          pointer-events: none;
-          transform: translateX(-1px);
-          z-index: 25;
-        }
+        .fc-view-harness { overflow: hidden; }
       `}</style>
     </div>
   );
