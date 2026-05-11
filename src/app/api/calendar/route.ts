@@ -32,10 +32,7 @@ export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
 
   if (!session?.accessToken) {
-    return NextResponse.json(
-      { error: "Unauthorized", hint: "Missing access token. Sign out and sign in again." },
-      { status: 401 },
-    );
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
@@ -75,9 +72,8 @@ export async function GET(request: Request) {
     });
 
     if (!response.ok) {
-      const detail = await response.text();
       return NextResponse.json(
-        { error: "Failed to fetch events", detail },
+        { error: "Failed to fetch events" },
         { status: response.status },
       );
     }

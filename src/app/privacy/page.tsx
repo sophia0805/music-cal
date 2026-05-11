@@ -18,7 +18,6 @@ export default function PrivacyPage() {
           </p>
         </div>
       </header>
-
       <section className={`p-5 sm:p-6 ${panelClass}`}>
         <p className="m-0 text-sm text-[var(--muted)]">Last updated: May 10, 2026</p>
 
@@ -64,7 +63,6 @@ export default function PrivacyPage() {
           <li>You can sign out at any time.</li>
           <li>You can revoke Music Cal’s access from your Google Account settings.</li>
         </ul>
-
         <h2 className="mt-6 mb-2 text-base font-medium">Contact</h2>
         <p className="m-0 text-sm">
           If you have questions, contact the site owner (the person who shared this link with you).

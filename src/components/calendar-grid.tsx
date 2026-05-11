@@ -295,7 +295,7 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rollScrollRef = useRef<HTMLDivElement>(null);
   const rollMeasureRef = useRef<HTMLDivElement>(null);
-  const rollLayoutRef = useRef({ rollW: FALLBACK_ROLL_WIDTH, pxPerCol: FALLBACK_ROLL_WIDTH / GRID_COLS });
+  const rollLayoutRef = useRef({ pxPerCol: FALLBACK_ROLL_WIDTH / GRID_COLS });
   const layoutRef = useRef<LayoutCell[]>([]);
   const masterGainRef = useRef<GainNode | null>(null);
 
@@ -353,7 +353,7 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
     const rollW =
       rollWidth > 0 ? rollWidth : FALLBACK_ROLL_WIDTH;
     const pixelsPerCol = rollW / GRID_COLS;
-    rollLayoutRef.current = { rollW, pxPerCol: pixelsPerCol };
+    rollLayoutRef.current = { pxPerCol: pixelsPerCol };
     const rollH = RULER_HEIGHT + numWeekRows * ROW_HEIGHT;
     const scale = dpr;
     const firstDay =
@@ -407,9 +407,6 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
       ctx.restore();
     }
 
-    ctx.fillStyle = rollBg;
-    ctx.fillRect(0, RULER_HEIGHT, rollW, rollH - RULER_HEIGHT);
-
     ctx.strokeStyle = line;
     ctx.lineWidth = 1;
     for (let c = 1; c < GRID_COLS; c++) {
@@ -448,7 +445,6 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
       const h = Math.max(3, slotH - 1);
       const color = EVENT_COLORS[colorIndexFromId(c.id)];
 
-      ctx.globalAlpha = 1;
       ctx.fillStyle = color;
       ctx.fillRect(cellLeft, y, cellW, h);
 
@@ -526,7 +522,6 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
         stopPlaybackRef.current = null;
         void audioContext.close();
       };
-
       stopPlaybackRef.current = () => {
         cancelled = true;
         finishPlayback();
@@ -648,7 +643,7 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
         const response = await fetch(`/api/calendar?${params.toString()}`, { credentials: "include" });
         const payload = await response.json();
         if (!response.ok) {
-          setLoadError(payload.hint || payload.error || "Failed to load.");
+          setLoadError(payload.error || "Failed to load.");
           successCallback([]);
           return;
         }
