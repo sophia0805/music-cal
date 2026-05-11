@@ -22,14 +22,13 @@ export default function TermsPage() {
 
         <h2 className="mt-6 mb-2 text-base font-medium">Service</h2>
         <p className="m-0 text-sm">
-          Music Cal is a free app that displays your Google Calendar events and turns them into an
+          Music Cal is a free app that shows your calendar and turns event timing into a simple
           audio/visual experience.
         </p>
 
         <h2 className="mt-6 mb-2 text-base font-medium">Accounts</h2>
         <p className="m-0 text-sm">
-          You sign in with Google. You are responsible for maintaining the security of your Google
-          account.
+          You sign in with Google. Keep your Google account credentials secure.
         </p>
 
         <h2 className="mt-6 mb-2 text-base font-medium">Acceptable use</h2>
@@ -41,20 +40,18 @@ export default function TermsPage() {
 
         <h2 className="mt-6 mb-2 text-base font-medium">No warranties</h2>
         <p className="m-0 text-sm">
-          The service is provided “as is” without warranties of any kind. We don’t guarantee it will
-          be uninterrupted or error-free.
+          The service is provided “as is.” We can’t guarantee uninterrupted service or zero bugs.
         </p>
 
         <h2 className="mt-6 mb-2 text-base font-medium">Limitation of liability</h2>
         <p className="m-0 text-sm">
-          To the maximum extent permitted by law, the site owner is not liable for any indirect,
+          To the maximum extent allowed by law, the site owner is not liable for indirect,
           incidental, special, consequential, or punitive damages.
         </p>
 
         <h2 className="mt-6 mb-2 text-base font-medium">Changes</h2>
         <p className="m-0 text-sm">
-          We may update these terms from time to time. Continued use of the service means you
-          accept the updated terms.
+          These terms may change over time. Continued use means you accept the current version.
         </p>
       </section>
     </main>

@@ -24,7 +24,7 @@ export type CalendarInputEvent = {
   link?: string;
 };
 
-const SECONDS_PER_COLUMN = 0.68;
+const SEC_PER_COL = 0.68;
 
 const EVENT_COLORS = [
   "#dc2626",
@@ -44,7 +44,7 @@ function colorIndexFromId(eventId: string): number {
   return h % EVENT_COLORS.length;
 }
 
-function eventStyleFromId(eventId: string): {
+function styleFromId(eventId: string): {
   backgroundColor: string;
   borderColor: string;
   textColor: string;
@@ -487,7 +487,7 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
     const totalViewDays = Math.round(
       (activeRange.end.getTime() - activeRange.start.getTime()) / 86400000
     );
-    const secPerCol = SECONDS_PER_COLUMN / speed;
+    const secPerCol = SEC_PER_COL / speed;
     const totalDurationSeconds = GRID_COLS * secPerCol;
     const segments = buildNotes(events, activeRange, totalViewDays);
     const cells = buildCells(segments, totalViewDays);
@@ -676,7 +676,7 @@ export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
       });
       setEvents(parsed);
       const fcEvents: EventInput[] = list.map((e) => {
-        const eventColors = eventStyleFromId(e.id);
+        const eventColors = styleFromId(e.id);
         return {
           id: e.id,
           title: e.title,

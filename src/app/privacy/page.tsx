@@ -2,8 +2,7 @@ export const metadata = {
   title: "Privacy Policy • Music Cal",
 };
 
-const panelClass =
-  "border-2 border-[var(--border)] bg-[var(--panel)] shadow-[4px_4px_0_0_var(--border)]";
+const panelClass = "border-2 border-[var(--border)] bg-[var(--panel)] shadow-[4px_4px_0_0_var(--border)]";
 
 export default function PrivacyPage() {
   return (
@@ -14,42 +13,47 @@ export default function PrivacyPage() {
             Privacy Policy
           </h1>
           <p className="site-lede mt-3 mb-0">
-            How Music Cal handles your data.
+            Plain-language notes on what this app touches and why.
           </p>
         </div>
       </header>
       <section className={`p-5 sm:p-6 ${panelClass}`}>
         <p className="m-0 text-sm text-[var(--muted)]">Last updated: May 10, 2026</p>
 
-        <h2 className="mt-6 mb-2 text-base font-medium">What we access</h2>
+        <h2 className="mt-6 mb-2 text-base font-medium">Quick version</h2>
         <p className="m-0 text-sm">
-          Music Cal uses Google Sign-In to read your Google Calendar events (read-only) so it can
-          display them and generate the “song grid”.
+          Music Cal only asks for read-only calendar access. It uses that to draw your event grid
+          and generate playback timing. It does not edit your calendar.
         </p>
+
+        <h2 className="mt-6 mb-2 text-base font-medium">What we access</h2>
+        <ul className="m-0 list-disc pl-5 text-sm">
+          <li>Basic Google account identity (email/profile) for sign-in.</li>
+          <li>Read-only event data from your calendar to render this app’s views.</li>
+        </ul>
 
         <h2 className="mt-6 mb-2 text-base font-medium">What we store</h2>
         <ul className="m-0 list-disc pl-5 text-sm">
           <li>
-            Authentication session data required to keep you signed in (including Google access
-            tokens / refresh tokens).
+            Session/auth data needed to keep you signed in (including access/refresh tokens).
           </li>
           <li>
-            We do not intentionally store your calendar event contents in a database. Events are
-            fetched from Google when needed.
+            Calendar events are fetched when needed. We do not intentionally keep a long-term event
+            database.
           </li>
         </ul>
 
         <h2 className="mt-6 mb-2 text-base font-medium">How we use your data</h2>
         <ul className="m-0 list-disc pl-5 text-sm">
-          <li>To show your calendar events inside the app.</li>
-          <li>To open an event in Google Calendar when you click it.</li>
-          <li>To generate audio playback based on event timing.</li>
+          <li>Show your events in calendar and song-grid views.</li>
+          <li>Open Google Calendar links when you click an event.</li>
+          <li>Generate audio playback timing from event layout.</li>
         </ul>
 
         <h2 className="mt-6 mb-2 text-base font-medium">Sharing</h2>
         <p className="m-0 text-sm">
-          We do not sell your personal information. We do not share your calendar data with third
-          parties except as necessary to provide the service (Google APIs).
+          We do not sell personal information. Data is only shared with services needed to run the
+          app (mainly Google APIs).
         </p>
 
         <h2 className="mt-6 mb-2 text-base font-medium">Security</h2>
@@ -65,10 +69,9 @@ export default function PrivacyPage() {
         </ul>
         <h2 className="mt-6 mb-2 text-base font-medium">Contact</h2>
         <p className="m-0 text-sm">
-          If you have questions, contact the site owner (the person who shared this link with you).
+          Questions? Reach out to the site owner (the person who shared this app with you).
         </p>
       </section>
     </main>
   );
 }
-

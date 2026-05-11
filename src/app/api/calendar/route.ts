@@ -10,8 +10,7 @@ type GoogleEvent = {
   end?: { dateTime?: string; date?: string };
 };
 
-const GOOGLE_CALENDAR_EVENTS_URL =
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const GOOGLE_CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const DEFAULT_RANGE_MONTHS = 2;
 const FETCH_PAGE_SIZE = "250";
 
