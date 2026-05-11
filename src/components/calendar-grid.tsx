@@ -26,7 +26,7 @@ type ApiEvent = {
 
 const SECONDS_PER_COLUMN = 0.68;
 
-const colors = [
+const EVENT_COLORS = [
   "#dc2626",
   "#ea580c",
   "#ca8a04",
@@ -41,7 +41,7 @@ const colors = [
 function colorIndexFromId(eventId: string): number {
   let h = 0;
   for (let i = 0; i < eventId.length; i++) h = (h * 31 + eventId.charCodeAt(i)) >>> 0;
-  return h % colors.length;
+  return h % EVENT_COLORS.length;
 }
 
 function eventStyleFromId(eventId: string): {
@@ -49,7 +49,7 @@ function eventStyleFromId(eventId: string): {
   borderColor: string;
   textColor: string;
 } {
-  const bg = colors[colorIndexFromId(eventId)];
+  const bg = EVENT_COLORS[colorIndexFromId(eventId)];
   return { backgroundColor: bg, borderColor: "#44403c", textColor: "#faf7f2" };
 }
 
@@ -61,7 +61,7 @@ const GRID_COLS = 7;
 const RULER_FONT = '14px ui-monospace, monospace';
 const NOTE_LABEL_FONT = '600 13px ui-monospace, monospace';
 
-function fillTextClipped(
+function drawTextWithin(
   ctx: CanvasRenderingContext2D,
   text: string,
   x: number,
@@ -76,11 +76,9 @@ function fillTextClipped(
   if (t.length > 0) ctx.fillText(t, x, y);
 }
 
-const yForWeekRow = (weekRow: number) => RULER_HEIGHT + weekRow * ROW_HEIGHT;
-
+const getWeekY = (weekRow: number) => RULER_HEIGHT + weekRow * ROW_HEIGHT;
 const midiToFreq = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
-
-function baseMidiFromWeekRow(weekRow: number, numWeekRows: number): number {
+function rowBaseMidi(weekRow: number, numWeekRows: number): number {
   const hi = 84;
   const lo = 48;
   if (numWeekRows <= 1) return Math.round((hi + lo) / 2);
@@ -91,14 +89,13 @@ function baseMidiFromWeekRow(weekRow: number, numWeekRows: number): number {
 
 const CHORD_STEPS = [0, 4, 7, 12, 16, 19];
 
-function chordVoiceFromBase(base: number, voiceIndex: number): number {
+function voiceMidi(base: number, voiceIndex: number): number {
   const n = CHORD_STEPS.length;
   const step = voiceIndex % n;
   const extraOct = Math.floor(voiceIndex / n);
   const m = base + CHORD_STEPS[step] + extraOct * 12;
   return Math.max(36, Math.min(96, m));
 }
-
 type CalEvent = {
   id: string;
   title: string;
@@ -107,7 +104,6 @@ type CalEvent = {
   allDay: boolean;
   link?: string;
 };
-
 type ActiveRange = { start: Date; end: Date };
 
 type LayoutNote = CalEvent & {
@@ -124,7 +120,7 @@ type LayoutCell = CalEvent & {
   depth: number;
 };
 
-function compareCellsSameColumn(a: LayoutCell, b: LayoutCell): number {
+function cmpColCells(a: LayoutCell, b: LayoutCell): number {
   return (
     a.weekRow - b.weekRow ||
     a.start.getTime() - b.start.getTime() ||
@@ -132,7 +128,7 @@ function compareCellsSameColumn(a: LayoutCell, b: LayoutCell): number {
   );
 }
 
-function compareCellsForChordVoicing(a: LayoutCell, b: LayoutCell): number {
+function cmpVoiceCells(a: LayoutCell, b: LayoutCell): number {
   return (
     b.weekRow - a.weekRow ||
     b.stack - a.stack ||
@@ -141,7 +137,7 @@ function compareCellsForChordVoicing(a: LayoutCell, b: LayoutCell): number {
   );
 }
 
-function assignChordMidiByCellHeight(cells: LayoutCell[], totalDays: number): void {
+function setChordMidi(cells: LayoutCell[], totalDays: number): void {
   const numWeekRows = Math.max(1, Math.ceil(totalDays / GRID_COLS));
   const byCell = new Map<string, LayoutCell[]>();
   for (const c of cells) {
@@ -150,40 +146,40 @@ function assignChordMidiByCellHeight(cells: LayoutCell[], totalDays: number): vo
     byCell.get(key)!.push(c);
   }
   for (const arr of byCell.values()) {
-    arr.sort(compareCellsForChordVoicing);
+    arr.sort(cmpVoiceCells);
     const first = arr[0];
-    const base = baseMidiFromWeekRow(first.weekRow, numWeekRows);
+    const base = rowBaseMidi(first.weekRow, numWeekRows);
     arr.forEach((c, i) => {
-      c.midi = chordVoiceFromBase(base, i);
+      c.midi = voiceMidi(base, i);
     });
   }
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-function parseGoogleAllDayYmd(ymd: string): Date {
+function parseAllDayDate(ymd: string): Date {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd.trim());
   if (!m) return new Date(ymd);
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
 }
 
-function startOfLocalDay(d: Date): Date {
+function dayStart(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-function dayIndexBoundsForEvent(
+function getDayBounds(
   ev: CalEvent,
   viewStart: Date,
   totalDays: number
 ): { startD: number; endD: number } | null {
   const dayMs = 86400000;
-  const vs = startOfLocalDay(viewStart).getTime();
-  const startDayMs = startOfLocalDay(ev.start).getTime();
+  const vs = dayStart(viewStart).getTime();
+  const startDayMs = dayStart(ev.start).getTime();
   const startD = Math.floor((startDayMs - vs) / dayMs);
 
   const endExclusiveMs = ev.allDay
-    ? startOfLocalDay(ev.end).getTime()
-    : startOfLocalDay(ev.end).getTime() + dayMs;
+    ? dayStart(ev.end).getTime()
+    : dayStart(ev.end).getTime() + dayMs;
 
   const endD = Math.min(
     totalDays,
@@ -195,7 +191,7 @@ function dayIndexBoundsForEvent(
   return { startD: s, endD: e };
 }
 
-function rowSegments(
+function splitByWeek(
   startD: number,
   endD: number
 ): Array<{ weekRow: number; startCol: number; colSpan: number }> {
@@ -213,7 +209,7 @@ function rowSegments(
   return segments;
 }
 
-function layoutRollNotes(
+function buildNotes(
   events: CalEvent[],
   activeRange: ActiveRange,
   totalDays: number
@@ -222,10 +218,10 @@ function layoutRollNotes(
   const result: LayoutNote[] = [];
 
   sorted.forEach((ev) => {
-    const bounds = dayIndexBoundsForEvent(ev, activeRange.start, totalDays);
+    const bounds = getDayBounds(ev, activeRange.start, totalDays);
     if (!bounds) return;
     const { startD, endD } = bounds;
-    const segments = rowSegments(startD, endD);
+    const segments = splitByWeek(startD, endD);
 
     segments.forEach((seg) => {
       result.push({
@@ -236,13 +232,13 @@ function layoutRollNotes(
       });
     });
   });
-
+  
   return result;
 }
 
-function layoutRollCells(segments: LayoutNote[], totalDays: number): LayoutCell[] {
+function buildCells(segments: LayoutNote[], totalDays: number): LayoutCell[] {
   const buckets = new Map<string, LayoutCell[]>();
-
+  
   for (const seg of segments) {
     for (let k = 0; k < seg.colSpan; k++) {
       const col = seg.startCol + k;
@@ -276,18 +272,18 @@ function layoutRollCells(segments: LayoutNote[], totalDays: number): LayoutCell[
     const depth = arr.length;
     arr.forEach((c, i) => out.push({ ...c, stack: i, depth }));
   }
-  assignChordMidiByCellHeight(out, totalDays);
+  setChordMidi(out, totalDays);
   return out;
 }
 
 export default function CalendarGrid() {
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
+  const [events, setEvents] = useState<CalEvent[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playheadColumn, setPlayheadColumn] = useState(0);
+  const [playheadCol, setPlayheadCol] = useState(0);
   const [activeRange, setActiveRange] = useState<ActiveRange | null>(null);
-  const [soundVolume, setSoundVolume] = useState(1);
-  const [tempoSpeed, setTempoSpeed] = useState(1);
+  const [volume, setVolume] = useState(1);
+  const [speed, setSpeed] = useState(1);
 
   const calendarRef = useRef<FullCalendar>(null);
   const stopPlaybackRef = useRef<(() => void) | null>(null);
@@ -299,23 +295,18 @@ export default function CalendarGrid() {
   const layoutRef = useRef<LayoutCell[]>([]);
   const masterGainRef = useRef<GainNode | null>(null);
 
-  const toDate = (v: unknown): Date | null => {
+  const parseDate = (v: unknown): Date | null => {
     if (v == null) return null;
     const d = v instanceof Date ? v : new Date(v as string | number);
     return isNaN(d.getTime()) ? null : d;
   };
 
-  const gridInfo = activeRange
-    ? (() => {
-        const totalMs = activeRange.end.getTime() - activeRange.start.getTime();
-        const totalDays = Math.round(totalMs / (1000 * 60 * 60 * 24));
-        const weeks = totalDays / 7;
-        return { totalDays, weeks, cols: 7, rows: weeks };
-      })()
-    : null;
+  const totalDays = activeRange
+    ? Math.round((activeRange.end.getTime() - activeRange.start.getTime()) / 86400000)
+    : 0;
 
   const [dpr, setDpr] = useState(1);
-  const [rollTrackWidth, setRollTrackWidth] = useState(0);
+  const [rollWidth, setRollWidth] = useState(0);
 
   useEffect(() => {
     const upd = () => setDpr(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
@@ -329,16 +320,16 @@ export default function CalendarGrid() {
     if (!g) return;
     const ctx = g.context;
     if (ctx.state === "closed") return;
-    const v = soundVolume;
+    const v = volume;
     g.gain.setTargetAtTime(v, ctx.currentTime, 0.02);
-  }, [soundVolume]);
+  }, [volume]);
 
   useLayoutEffect(() => {
     const el = rollMeasureRef.current;
     if (!el) return;
     const apply = (w: number) => {
       const floored = Math.floor(w);
-      if (floored > 0) setRollTrackWidth(floored);
+      if (floored > 0) setRollWidth(floored);
     };
     apply(el.getBoundingClientRect().width);
     const ro = new ResizeObserver((entries) => {
@@ -351,13 +342,12 @@ export default function CalendarGrid() {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !gridInfo || !activeRange) return;
+    if (!canvas || !activeRange || totalDays <= 0) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const totalDays = gridInfo.totalDays;
     const numWeekRows = Math.max(1, Math.ceil(totalDays / GRID_COLS));
     const rollW =
-      rollTrackWidth > 0 ? rollTrackWidth : FALLBACK_ROLL_WIDTH;
+      rollWidth > 0 ? rollWidth : FALLBACK_ROLL_WIDTH;
     const pixelsPerCol = rollW / GRID_COLS;
     rollLayoutRef.current = { rollW, pxPerCol: pixelsPerCol };
     const rollH = RULER_HEIGHT + numWeekRows * ROW_HEIGHT;
@@ -371,8 +361,8 @@ export default function CalendarGrid() {
 
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
-    const segments = layoutRollNotes(calEvents, activeRange, totalDays);
-    const cells = layoutRollCells(segments, totalDays);
+    const segments = buildNotes(events, activeRange, totalDays);
+    const cells = buildCells(segments, totalDays);
     layoutRef.current = cells;
 
     const rollBg = "#e3ddd2";
@@ -409,7 +399,7 @@ export default function CalendarGrid() {
       ctx.beginPath();
       ctx.rect(x + 1, 1, pixelsPerCol - 2, RULER_HEIGHT - 2);
       ctx.clip();
-      fillTextClipped(ctx, name, x + pad, RULER_HEIGHT - 8, colW);
+      drawTextWithin(ctx, name, x + pad, RULER_HEIGHT - 8, colW);
       ctx.restore();
     }
 
@@ -447,12 +437,12 @@ export default function CalendarGrid() {
       const colR = (c.col + 1) * pixelsPerCol;
       const cellLeft = colL + 1;
       const cellW = Math.max(3, colR - colL - 2);
-      const yBase = yForWeekRow(c.weekRow);
+      const yBase = getWeekY(c.weekRow);
       const inner = ROW_HEIGHT - cellPad * 2;
       const slotH = inner / c.depth;
       const y = yBase + cellPad + c.stack * slotH;
       const h = Math.max(3, slotH - 1);
-      const color = colors[colorIndexFromId(c.id)];
+      const color = EVENT_COLORS[colorIndexFromId(c.id)];
 
       ctx.globalAlpha = 1;
       ctx.fillStyle = color;
@@ -469,46 +459,45 @@ export default function CalendarGrid() {
       ctx.beginPath();
       ctx.rect(cellLeft, y, cellW, h);
       ctx.clip();
-      fillTextClipped(ctx, label, cellLeft + 3, y + h - 4, Math.max(0, cellW - 8));
+      drawTextWithin(ctx, label, cellLeft + 3, y + h - 4, Math.max(0, cellW - 8));
       ctx.restore();
     }
 
-    const ph = Math.max(0, Math.min(GRID_COLS, playheadColumn));
+    const ph = Math.max(0, Math.min(GRID_COLS, playheadCol));
     const px = ph * pixelsPerCol;
     const stickW = Math.max(3, Math.min(6, pixelsPerCol * 0.045));
     ctx.fillStyle = "#1c1917";
     ctx.fillRect(px - stickW / 2, 0, stickW, rollH);
     ctx.fillStyle = "#9c4221";
     ctx.fillRect(px - (stickW - 2) / 2, 0, Math.max(1, stickW - 2), rollH);
-  }, [calEvents, activeRange, gridInfo, playheadColumn, dpr, rollTrackWidth]);
+  }, [events, activeRange, totalDays, playheadCol, dpr, rollWidth]);
 
   useEffect(() => {
     if (!isPlaying) return;
     const el = rollScrollRef.current;
     if (!el) return;
     const { pxPerCol } = rollLayoutRef.current;
-    const px = playheadColumn * pxPerCol;
+    const px = playheadCol * pxPerCol;
     const target = px - el.clientWidth * 0.38;
     el.scrollLeft = Math.max(0, Math.min(target, el.scrollWidth - el.clientWidth));
-  }, [isPlaying, playheadColumn, rollTrackWidth]);
+  }, [isPlaying, playheadCol, rollWidth]);
 
   const playSong = useCallback(() => {
-    if (isPlaying || calEvents.length === 0 || !activeRange) return;
-    const viewStart = activeRange.start;
+    if (isPlaying || events.length === 0 || !activeRange) return;
     const totalViewDays = Math.round(
-      (activeRange.end.getTime() - viewStart.getTime()) / 86400000
+      (activeRange.end.getTime() - activeRange.start.getTime()) / 86400000
     );
-    const secPerCol = SECONDS_PER_COLUMN / tempoSpeed;
+    const secPerCol = SECONDS_PER_COLUMN / speed;
     const totalDurationSeconds = GRID_COLS * secPerCol;
-    const segments = layoutRollNotes(calEvents, activeRange, totalViewDays);
-    const cells = layoutRollCells(segments, totalViewDays);
+    const segments = buildNotes(events, activeRange, totalViewDays);
+    const cells = buildCells(segments, totalViewDays);
     const cellsByCol = new Map<number, LayoutCell[]>();
     for (const c of cells) {
       if (!cellsByCol.has(c.col)) cellsByCol.set(c.col, []);
       cellsByCol.get(c.col)!.push(c);
     }
     for (const arr of cellsByCol.values()) {
-      arr.sort(compareCellsSameColumn);
+      arr.sort(cmpColCells);
     }
     type WindowWithWebKitAudio = Window & { webkitAudioContext?: typeof AudioContext };
     const AudioContextCtor =
@@ -527,7 +516,7 @@ export default function CalendarGrid() {
       const finishPlayback = () => {
         masterGainRef.current = null;
         setIsPlaying(false);
-        setPlayheadColumn(0);
+        setPlayheadCol(0);
         if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
         stopPlaybackRef.current = null;
@@ -557,7 +546,7 @@ export default function CalendarGrid() {
       compressor.release.value = 0.25;
 
       const masterGain = audioContext.createGain();
-      masterGain.gain.value = soundVolume;
+      masterGain.gain.value = volume;
       compressor.connect(masterGain);
       masterGain.connect(audioContext.destination);
       masterGainRef.current = masterGain;
@@ -595,7 +584,7 @@ export default function CalendarGrid() {
         const elapsed = audioContext.currentTime - audioStart;
         const progress = Math.min(1, elapsed / totalDurationSeconds);
         const col = Math.min(GRID_COLS, elapsed / secPerCol);
-        setPlayheadColumn(col);
+        setPlayheadCol(col);
         if (progress < 1) {
           animationFrameRef.current = window.requestAnimationFrame(tick);
         } else {
@@ -606,7 +595,7 @@ export default function CalendarGrid() {
     };
 
     void run();
-  }, [calEvents, isPlaying, activeRange, tempoSpeed, soundVolume]);
+  }, [events, isPlaying, activeRange, speed, volume]);
 
   const onRollPointerDown = useCallback(
     (e: PointerEvent<HTMLCanvasElement>) => {
@@ -629,7 +618,7 @@ export default function CalendarGrid() {
         const colR = (c.col + 1) * pxPerCol;
         const cellLeft = colL + 1;
         const cellW = Math.max(3, colR - colL - 2);
-        const yBase = yForWeekRow(c.weekRow);
+        const yBase = getWeekY(c.weekRow);
         const inner = ROW_HEIGHT - cellPad * 2;
         const slotH = inner / c.depth;
         const y0 = yBase + cellPad + c.stack * slotH;
@@ -658,9 +647,9 @@ export default function CalendarGrid() {
       const list = (payload.events as ApiEvent[]) ?? [];
       const parsed: CalEvent[] = list.flatMap((e): CalEvent[] => {
         if (e.allDay) {
-          const start = parseGoogleAllDayYmd(String(e.start));
+          const start = parseAllDayDate(String(e.start));
           if (isNaN(start.getTime())) return [];
-          let end = e.end ? parseGoogleAllDayYmd(String(e.end)) : new Date(start);
+          let end = e.end ? parseAllDayDate(String(e.end)) : new Date(start);
           if (!e.end || isNaN(end.getTime())) {
             end = new Date(start);
             end.setDate(end.getDate() + 1);
@@ -671,8 +660,8 @@ export default function CalendarGrid() {
           }
           return [{ id: e.id, title: e.title, start, end, allDay: true, link: e.link }];
         }
-        const start = toDate(e.start);
-        let end = toDate(e.end);
+        const start = parseDate(e.start);
+        let end = parseDate(e.end);
         if (!start) return [];
         if (!end || end <= start) {
           end = new Date(start);
@@ -680,9 +669,9 @@ export default function CalendarGrid() {
         }
         return [{ id: e.id, title: e.title, start, end, allDay: false, link: e.link }];
       });
-      setCalEvents(parsed);
+      setEvents(parsed);
       const fcEvents: EventInput[] = list.map((e) => {
-        const colors = eventStyleFromId(e.id);
+        const eventColors = eventStyleFromId(e.id);
         return {
           id: e.id,
           title: e.title,
@@ -690,7 +679,7 @@ export default function CalendarGrid() {
           end: e.end,
           allDay: e.allDay,
           extendedProps: { link: e.link },
-          ...colors,
+          ...eventColors,
         };
       });
       successCallback(fcEvents);
@@ -721,7 +710,7 @@ export default function CalendarGrid() {
           <button
             type="button"
             onClick={playSong}
-            disabled={isPlaying || calEvents.length === 0}
+            disabled={isPlaying || events.length === 0}
             className="border-2 border-[var(--border)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[#faf7f2] disabled:opacity-40 hover:bg-[var(--accent-hover)]"
           >
             {isPlaying ? "Playing…" : "Play"}
@@ -744,13 +733,13 @@ export default function CalendarGrid() {
             type="range"
             min={0}
             max={100}
-            value={Math.round(soundVolume * 100)}
-            onChange={(e) => setSoundVolume(Number(e.target.value) / 100)}
+            value={Math.round(volume * 100)}
+            onChange={(e) => setVolume(Number(e.target.value) / 100)}
             className="h-2 min-w-[100px] flex-1 accent-[var(--accent)]"
             aria-label="Playback volume"
           />
           <span className="w-8 tabular-nums text-[var(--foreground)]">
-            {Math.round(soundVolume * 100)}
+            {Math.round(volume * 100)}
           </span>
         </label>
         <label className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-[var(--muted)]">
@@ -760,13 +749,13 @@ export default function CalendarGrid() {
             min={50}
             max={160}
             step={5}
-            value={Math.round(tempoSpeed * 100)}
-            onChange={(e) => setTempoSpeed(Number(e.target.value) / 100)}
+            value={Math.round(speed * 100)}
+            onChange={(e) => setSpeed(Number(e.target.value) / 100)}
             disabled={isPlaying}
             className="h-2 min-w-[100px] flex-1 accent-[var(--accent)] disabled:opacity-45"
             aria-label="Playback speed"
           />
-          <span className="w-10 tabular-nums text-[var(--foreground)]">{Math.round(tempoSpeed * 100)}%</span>
+          <span className="w-10 tabular-nums text-[var(--foreground)]">{Math.round(speed * 100)}%</span>
         </label>
       </div>
 
@@ -813,7 +802,7 @@ export default function CalendarGrid() {
           }}
         />
       </div>
-
+      
       <style jsx global>{`
         .fc-shell .fc {
           --fc-border-color: #c9c4bc;
@@ -821,6 +810,9 @@ export default function CalendarGrid() {
           --fc-button-border-color: #a8a29e;
           --fc-button-text-color: #292524;
           --fc-button-hover-bg-color: #e3ddd2;
+          --fc-button-hover-border-color: #78716c;
+          --fc-button-active-bg-color: #e7d8c8;
+          --fc-button-active-border-color: #9c4221;
           --fc-today-bg-color: #e7d8c8;
           --fc-event-bg-color: #9c4221;
           --fc-event-border-color: #44403c;
