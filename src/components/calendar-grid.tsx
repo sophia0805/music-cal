@@ -6,7 +6,14 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
-import { useCallback, useRef, useState, useEffect, type PointerEvent } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  type PointerEvent,
+} from "react";
 
 type ApiEvent = {
   id: string;
@@ -17,10 +24,9 @@ type ApiEvent = {
   link?: string;
 };
 
-const SECONDS_PER_COLUMN = 0.48;
+const SECONDS_PER_COLUMN = 0.68;
 
-/** Saturated blocks — readable with white labels; also used for calendar event chips. */
-const FUN_EVENT_COLORS = [
+const colors = [
   "#dc2626",
   "#ea580c",
   "#ca8a04",
@@ -35,7 +41,7 @@ const FUN_EVENT_COLORS = [
 function colorIndexFromId(eventId: string): number {
   let h = 0;
   for (let i = 0; i < eventId.length; i++) h = (h * 31 + eventId.charCodeAt(i)) >>> 0;
-  return h % FUN_EVENT_COLORS.length;
+  return h % colors.length;
 }
 
 function eventStyleFromId(eventId: string): {
@@ -43,18 +49,17 @@ function eventStyleFromId(eventId: string): {
   borderColor: string;
   textColor: string;
 } {
-  const bg = FUN_EVENT_COLORS[colorIndexFromId(eventId)];
-  return { backgroundColor: bg, borderColor: "#475569", textColor: "#f8fafc" };
+  const bg = colors[colorIndexFromId(eventId)];
+  return { backgroundColor: bg, borderColor: "#44403c", textColor: "#faf7f2" };
 }
 
-const KEY_WIDTH = 0;
-const ROW_HEIGHT = 36;
-const RULER_HEIGHT = 34;
-const PIXELS_PER_COL = 52;
+const ROW_HEIGHT = 64;
+const RULER_HEIGHT = 52;
+const FALLBACK_ROLL_WIDTH = 672;
 const GRID_COLS = 7;
 
-const RULER_FONT = '12px ui-monospace, monospace';
-const NOTE_LABEL_FONT = '11px ui-monospace, monospace';
+const RULER_FONT = '14px ui-monospace, monospace';
+const NOTE_LABEL_FONT = '600 13px ui-monospace, monospace';
 
 function fillTextClipped(
   ctx: CanvasRenderingContext2D,
@@ -279,15 +284,20 @@ export default function CalendarGrid() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playheadColumn, setPlayheadColumn] = useState<number | null>(null);
+  const [playheadColumn, setPlayheadColumn] = useState(0);
   const [activeRange, setActiveRange] = useState<ActiveRange | null>(null);
+  const [soundVolume, setSoundVolume] = useState(1);
+  const [tempoSpeed, setTempoSpeed] = useState(1);
 
   const calendarRef = useRef<FullCalendar>(null);
   const stopPlaybackRef = useRef<(() => void) | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rollScrollRef = useRef<HTMLDivElement>(null);
+  const rollMeasureRef = useRef<HTMLDivElement>(null);
+  const rollLayoutRef = useRef({ rollW: FALLBACK_ROLL_WIDTH, pxPerCol: FALLBACK_ROLL_WIDTH / GRID_COLS });
   const layoutRef = useRef<LayoutCell[]>([]);
+  const masterGainRef = useRef<GainNode | null>(null);
 
   const toDate = (v: unknown): Date | null => {
     if (v == null) return null;
@@ -305,6 +315,7 @@ export default function CalendarGrid() {
     : null;
 
   const [dpr, setDpr] = useState(1);
+  const [rollTrackWidth, setRollTrackWidth] = useState(0);
 
   useEffect(() => {
     const upd = () => setDpr(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
@@ -314,20 +325,45 @@ export default function CalendarGrid() {
   }, []);
 
   useEffect(() => {
+    const g = masterGainRef.current;
+    if (!g) return;
+    const ctx = g.context;
+    if (ctx.state === "closed") return;
+    const v = soundVolume;
+    g.gain.setTargetAtTime(v, ctx.currentTime, 0.02);
+  }, [soundVolume]);
+
+  useLayoutEffect(() => {
+    const el = rollMeasureRef.current;
+    if (!el) return;
+    const apply = (w: number) => {
+      const floored = Math.floor(w);
+      if (floored > 0) setRollTrackWidth(floored);
+    };
+    apply(el.getBoundingClientRect().width);
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      apply(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !gridInfo || !activeRange) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
     const totalDays = gridInfo.totalDays;
     const numWeekRows = Math.max(1, Math.ceil(totalDays / GRID_COLS));
-    const rollW = KEY_WIDTH + GRID_COLS * PIXELS_PER_COL;
+    const rollW =
+      rollTrackWidth > 0 ? rollTrackWidth : FALLBACK_ROLL_WIDTH;
+    const pixelsPerCol = rollW / GRID_COLS;
+    rollLayoutRef.current = { rollW, pxPerCol: pixelsPerCol };
     const rollH = RULER_HEIGHT + numWeekRows * ROW_HEIGHT;
     const scale = dpr;
-
     const firstDay =
       (calendarRef.current?.getApi().getOption("firstDay") as number | undefined) ?? 0;
-
     canvas.width = Math.round(rollW * scale);
     canvas.height = Math.round(rollH * scale);
     canvas.style.width = `${rollW}px`;
@@ -339,10 +375,10 @@ export default function CalendarGrid() {
     const cells = layoutRollCells(segments, totalDays);
     layoutRef.current = cells;
 
-    const rollBg = "#f1f5f9";
-    const rulerBg = "#e8eef4";
-    const line = "#cbd5e1";
-    const labelFg = "#334155";
+    const rollBg = "#e3ddd2";
+    const rulerBg = "#d8d0c4";
+    const line = "#a8a29e";
+    const labelFg = "#44403c";
 
     ctx.fillStyle = rollBg;
     ctx.fillRect(0, 0, rollW, rollH);
@@ -358,7 +394,7 @@ export default function CalendarGrid() {
 
     ctx.font = RULER_FONT;
     for (let c = 0; c < GRID_COLS; c++) {
-      const x = c * PIXELS_PER_COL;
+      const x = c * pixelsPerCol;
       ctx.strokeStyle = line;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
@@ -367,11 +403,11 @@ export default function CalendarGrid() {
 
       const name = DAY_NAMES[(firstDay + c) % 7];
       ctx.fillStyle = labelFg;
-      const pad = 6;
-      const colW = PIXELS_PER_COL - pad * 2;
+      const pad = Math.min(10, Math.max(4, pixelsPerCol * 0.07));
+      const colW = pixelsPerCol - pad * 2;
       ctx.save();
       ctx.beginPath();
-      ctx.rect(x + 1, 1, PIXELS_PER_COL - 2, RULER_HEIGHT - 2);
+      ctx.rect(x + 1, 1, pixelsPerCol - 2, RULER_HEIGHT - 2);
       ctx.clip();
       fillTextClipped(ctx, name, x + pad, RULER_HEIGHT - 8, colW);
       ctx.restore();
@@ -383,7 +419,7 @@ export default function CalendarGrid() {
     ctx.strokeStyle = line;
     ctx.lineWidth = 1;
     for (let c = 1; c < GRID_COLS; c++) {
-      const x = c * PIXELS_PER_COL;
+      const x = c * pixelsPerCol;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, RULER_HEIGHT);
       ctx.lineTo(x + 0.5, rollH);
@@ -399,7 +435,7 @@ export default function CalendarGrid() {
       ctx.stroke();
     }
 
-    const cellPad = 4;
+    const cellPad = 6;
     const sortedCells = [...cells].sort(
       (a, b) =>
         a.weekRow - b.weekRow ||
@@ -407,20 +443,22 @@ export default function CalendarGrid() {
         a.stack - b.stack
     );
     for (const c of sortedCells) {
-      const cellLeft = c.col * PIXELS_PER_COL + 1;
-      const cellW = PIXELS_PER_COL - 2;
+      const colL = c.col * pixelsPerCol;
+      const colR = (c.col + 1) * pixelsPerCol;
+      const cellLeft = colL + 1;
+      const cellW = Math.max(3, colR - colL - 2);
       const yBase = yForWeekRow(c.weekRow);
       const inner = ROW_HEIGHT - cellPad * 2;
       const slotH = inner / c.depth;
       const y = yBase + cellPad + c.stack * slotH;
       const h = Math.max(3, slotH - 1);
-      const color = FUN_EVENT_COLORS[colorIndexFromId(c.id)];
+      const color = colors[colorIndexFromId(c.id)];
 
       ctx.globalAlpha = 1;
       ctx.fillStyle = color;
       ctx.fillRect(cellLeft, y, cellW, h);
 
-      ctx.strokeStyle = "#94a3b8";
+      ctx.strokeStyle = "#78716c";
       ctx.lineWidth = 1;
       ctx.strokeRect(cellLeft + 0.5, y + 0.5, cellW - 1, h - 1);
 
@@ -435,34 +473,33 @@ export default function CalendarGrid() {
       ctx.restore();
     }
 
-    if (playheadColumn !== null) {
-      const px = playheadColumn * PIXELS_PER_COL;
-      ctx.strokeStyle = "#2563eb";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(px + 0.5, 0);
-      ctx.lineTo(px + 0.5, rollH);
-      ctx.stroke();
-    }
-  }, [calEvents, activeRange, gridInfo, playheadColumn, dpr]);
+    const ph = Math.max(0, Math.min(GRID_COLS, playheadColumn));
+    const px = ph * pixelsPerCol;
+    const stickW = Math.max(3, Math.min(6, pixelsPerCol * 0.045));
+    ctx.fillStyle = "#1c1917";
+    ctx.fillRect(px - stickW / 2, 0, stickW, rollH);
+    ctx.fillStyle = "#9c4221";
+    ctx.fillRect(px - (stickW - 2) / 2, 0, Math.max(1, stickW - 2), rollH);
+  }, [calEvents, activeRange, gridInfo, playheadColumn, dpr, rollTrackWidth]);
 
   useEffect(() => {
-    if (!isPlaying || playheadColumn === null) return;
+    if (!isPlaying) return;
     const el = rollScrollRef.current;
     if (!el) return;
-    const px = playheadColumn * PIXELS_PER_COL;
+    const { pxPerCol } = rollLayoutRef.current;
+    const px = playheadColumn * pxPerCol;
     const target = px - el.clientWidth * 0.38;
     el.scrollLeft = Math.max(0, Math.min(target, el.scrollWidth - el.clientWidth));
-  }, [isPlaying, playheadColumn]);
+  }, [isPlaying, playheadColumn, rollTrackWidth]);
 
-  const playCalendarSong = useCallback(() => {
+  const playSong = useCallback(() => {
     if (isPlaying || calEvents.length === 0 || !activeRange) return;
-
     const viewStart = activeRange.start;
     const totalViewDays = Math.round(
       (activeRange.end.getTime() - viewStart.getTime()) / 86400000
     );
-    const totalDurationSeconds = GRID_COLS * SECONDS_PER_COLUMN;
+    const secPerCol = SECONDS_PER_COLUMN / tempoSpeed;
+    const totalDurationSeconds = GRID_COLS * secPerCol;
     const segments = layoutRollNotes(calEvents, activeRange, totalViewDays);
     const cells = layoutRollCells(segments, totalViewDays);
     const cellsByCol = new Map<number, LayoutCell[]>();
@@ -473,7 +510,6 @@ export default function CalendarGrid() {
     for (const arr of cellsByCol.values()) {
       arr.sort(compareCellsSameColumn);
     }
-
     type WindowWithWebKitAudio = Window & { webkitAudioContext?: typeof AudioContext };
     const AudioContextCtor =
       window.AudioContext || (window as WindowWithWebKitAudio).webkitAudioContext;
@@ -481,7 +517,6 @@ export default function CalendarGrid() {
       setLoadError("Web Audio not supported.");
       return;
     }
-
     rollScrollRef.current?.scrollTo({ left: 0, behavior: "smooth" });
     setIsPlaying(true);
 
@@ -490,8 +525,9 @@ export default function CalendarGrid() {
       let cancelled = false;
 
       const finishPlayback = () => {
+        masterGainRef.current = null;
         setIsPlaying(false);
-        setPlayheadColumn(null);
+        setPlayheadColumn(0);
         if (animationFrameRef.current) window.cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
         stopPlaybackRef.current = null;
@@ -519,16 +555,21 @@ export default function CalendarGrid() {
       compressor.ratio.value = 4;
       compressor.attack.value = 0.003;
       compressor.release.value = 0.25;
-      compressor.connect(audioContext.destination);
+
+      const masterGain = audioContext.createGain();
+      masterGain.gain.value = soundVolume;
+      compressor.connect(masterGain);
+      masterGain.connect(audioContext.destination);
+      masterGainRef.current = masterGain;
 
       const audioStart = audioContext.currentTime + 0.05;
-      const holdDuration = SECONDS_PER_COLUMN * 0.9;
+      const holdDuration = secPerCol * 0.9;
 
       for (let col = 0; col < GRID_COLS; col++) {
         const group = cellsByCol.get(col);
         if (!group || group.length === 0) continue;
 
-        const t0 = audioStart + col * SECONDS_PER_COLUMN;
+        const t0 = audioStart + col * secPerCol;
         const n = group.length;
         const peakEach = Math.min(0.2, 0.12 / Math.sqrt(n));
 
@@ -553,7 +594,7 @@ export default function CalendarGrid() {
       const tick = () => {
         const elapsed = audioContext.currentTime - audioStart;
         const progress = Math.min(1, elapsed / totalDurationSeconds);
-        const col = Math.min(GRID_COLS, elapsed / SECONDS_PER_COLUMN);
+        const col = Math.min(GRID_COLS, elapsed / secPerCol);
         setPlayheadColumn(col);
         if (progress < 1) {
           animationFrameRef.current = window.requestAnimationFrame(tick);
@@ -561,12 +602,11 @@ export default function CalendarGrid() {
           finishPlayback();
         }
       };
-
       animationFrameRef.current = window.requestAnimationFrame(tick);
     };
 
     void run();
-  }, [calEvents, isPlaying, activeRange]);
+  }, [calEvents, isPlaying, activeRange, tempoSpeed, soundVolume]);
 
   const onRollPointerDown = useCallback(
     (e: PointerEvent<HTMLCanvasElement>) => {
@@ -576,17 +616,19 @@ export default function CalendarGrid() {
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       if (y < RULER_HEIGHT) return;
-
-      const cellPad = 4;
+      const cellPad = 6;
       const sorted = [...layoutRef.current].sort(
         (a, b) =>
           b.weekRow - a.weekRow ||
           b.col - a.col ||
           b.stack - a.stack
       );
+      const { pxPerCol } = rollLayoutRef.current;
       for (const c of sorted) {
-        const cellLeft = c.col * PIXELS_PER_COL + 1;
-        const cellW = PIXELS_PER_COL - 2;
+        const colL = c.col * pxPerCol;
+        const colR = (c.col + 1) * pxPerCol;
+        const cellLeft = colL + 1;
+        const cellW = Math.max(3, colR - colL - 2);
         const yBase = yForWeekRow(c.weekRow);
         const inner = ROW_HEIGHT - cellPad * 2;
         const slotH = inner / c.depth;
@@ -613,7 +655,6 @@ export default function CalendarGrid() {
         successCallback([]);
         return;
       }
-
       const list = (payload.events as ApiEvent[]) ?? [];
       const parsed: CalEvent[] = list.flatMap((e): CalEvent[] => {
         if (e.allDay) {
@@ -630,7 +671,6 @@ export default function CalendarGrid() {
           }
           return [{ id: e.id, title: e.title, start, end, allDay: true, link: e.link }];
         }
-
         const start = toDate(e.start);
         let end = toDate(e.end);
         if (!start) return [];
@@ -640,9 +680,7 @@ export default function CalendarGrid() {
         }
         return [{ id: e.id, title: e.title, start, end, allDay: false, link: e.link }];
       });
-
       setCalEvents(parsed);
-
       const fcEvents: EventInput[] = list.map((e) => {
         const colors = eventStyleFromId(e.id);
         return {
@@ -669,15 +707,22 @@ export default function CalendarGrid() {
   }, []);
 
   return (
-    <div className="w-full border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)]">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-2">
-        <p className="m-0 text-sm text-[var(--muted)]">Click a block to open the event.</p>
-        <div className="flex gap-1">
+    <div className="flex w-full flex-col border-2 border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] shadow-[4px_4px_0_0_var(--border)]">
+      <div className="flex shrink-0 flex-wrap items-center justify-center gap-x-8 gap-y-3 border-b-2 border-[var(--border)] px-3 py-2 sm:px-4">
+        <div className="min-w-0 text-center sm:text-left">
+          <p className="m-0 text-base font-normal text-[var(--foreground)] [font-family:Georgia,serif]">
+            Song Grid
+          </p>
+          <p className="m-0 mt-0.5 text-xs text-[var(--muted)]">
+            Click a block to open the event.
+          </p>
+        </div>
+        <div className="flex shrink-0 justify-center gap-2">
           <button
             type="button"
-            onClick={playCalendarSong}
+            onClick={playSong}
             disabled={isPlaying || calEvents.length === 0}
-            className="border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-sm disabled:opacity-40"
+            className="border-2 border-[var(--border)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[#faf7f2] disabled:opacity-40 hover:bg-[var(--accent-hover)]"
           >
             {isPlaying ? "Playing…" : "Play"}
           </button>
@@ -685,27 +730,60 @@ export default function CalendarGrid() {
             type="button"
             onClick={() => stopPlaybackRef.current?.()}
             disabled={!isPlaying}
-            className="border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-sm disabled:opacity-40"
+            className="border-2 border-[var(--border)] bg-[var(--background)] px-4 py-2 text-sm font-medium disabled:opacity-40"
           >
             Stop
           </button>
         </div>
       </div>
 
+      <div className="flex shrink-0 flex-col flex-wrap items-stretch justify-center gap-3 border-b-2 border-[var(--border)] px-3 py-2.5 sm:flex-row sm:items-center sm:gap-6 sm:px-4">
+        <label className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-[var(--muted)]">
+          <span className="w-14 shrink-0 text-[var(--foreground)]">Volume</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round(soundVolume * 100)}
+            onChange={(e) => setSoundVolume(Number(e.target.value) / 100)}
+            className="h-2 min-w-[100px] flex-1 accent-[var(--accent)]"
+            aria-label="Playback volume"
+          />
+          <span className="w-8 tabular-nums text-[var(--foreground)]">
+            {Math.round(soundVolume * 100)}
+          </span>
+        </label>
+        <label className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-[var(--muted)]">
+          <span className="w-14 shrink-0 text-[var(--foreground)]">Speed</span>
+          <input
+            type="range"
+            min={50}
+            max={160}
+            step={5}
+            value={Math.round(tempoSpeed * 100)}
+            onChange={(e) => setTempoSpeed(Number(e.target.value) / 100)}
+            disabled={isPlaying}
+            className="h-2 min-w-[100px] flex-1 accent-[var(--accent)] disabled:opacity-45"
+            aria-label="Playback speed"
+          />
+          <span className="w-10 tabular-nums text-[var(--foreground)]">{Math.round(tempoSpeed * 100)}%</span>
+        </label>
+      </div>
+
       {loadError && (
-        <div className="border-b border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm">
+        <div className="shrink-0 border-b-2 border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm sm:px-4">
           {loadError}
         </div>
       )}
 
-      <div className="relative w-full bg-[#f1f5f9]">
+      <div ref={rollMeasureRef} className="relative w-full shrink-0 bg-[var(--roll)]">
         <div
           ref={rollScrollRef}
-          className="max-h-[min(88vh,860px)] w-full overflow-x-auto overflow-y-auto overscroll-x-contain"
+          className="flex w-full justify-center overflow-visible"
         >
           <canvas
             ref={canvasRef}
-            className="block max-w-none touch-pan-x"
+            className="mx-auto block touch-pan-x"
             onPointerDown={onRollPointerDown}
             role="img"
             aria-label="Calendar events as a piano roll"
@@ -713,7 +791,7 @@ export default function CalendarGrid() {
         </div>
       </div>
 
-      <div className="fc-shell relative w-full border-t border-[var(--border)] bg-[var(--background)] p-2 md:p-2">
+      <div className="fc-shell relative w-full shrink-0 border-t-2 border-[var(--border)] bg-[var(--background)] p-2 md:p-3">
         <FullCalendar
           ref={calendarRef}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -738,24 +816,22 @@ export default function CalendarGrid() {
 
       <style jsx global>{`
         .fc-shell .fc {
-          --fc-border-color: #e2e8f0;
-          --fc-button-bg-color: #ffffff;
-          --fc-button-border-color: #cbd5e1;
-          --fc-button-text-color: #334155;
-          --fc-button-hover-bg-color: #f1f5f9;
-          --fc-today-bg-color: #e0f2fe;
-          --fc-event-bg-color: #2563eb;
-          --fc-event-border-color: #475569;
-          --fc-page-bg-color: #f6f8fb;
-          --fc-neutral-text-color: #334155;
+          --fc-border-color: #c9c4bc;
+          --fc-button-bg-color: #faf7f2;
+          --fc-button-border-color: #a8a29e;
+          --fc-button-text-color: #292524;
+          --fc-button-hover-bg-color: #e3ddd2;
+          --fc-today-bg-color: #e7d8c8;
+          --fc-event-bg-color: #9c4221;
+          --fc-event-border-color: #44403c;
+          --fc-page-bg-color: #f0ebe3;
+          --fc-neutral-text-color: #44403c;
           font-family: inherit;
         }
         .fc-shell .fc .fc-toolbar-title {
-          font-size: 1rem;
-          font-weight: normal;
-        }
-        .fc-view-harness {
-          overflow: hidden;
+          font-family: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+          font-size: 1.2rem;
+          font-weight: 400;
         }
       `}</style>
     </div>

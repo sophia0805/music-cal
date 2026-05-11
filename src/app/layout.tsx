@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Music Cal",
-  description: "turn your calendar into a song!",
+  description: "turn your busy calendar into a fun song!",
 };
 
 export default function RootLayout({

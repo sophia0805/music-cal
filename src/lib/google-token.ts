@@ -16,7 +16,7 @@ export async function refreshGoogleAccessToken(token: JWT): Promise<JWT> {
       refresh_token: refreshToken,
     }),
   });
-
+  
   const json = (await response.json()) as {
     access_token?: string;
     expires_in?: number;
@@ -26,7 +26,6 @@ export async function refreshGoogleAccessToken(token: JWT): Promise<JWT> {
   if (!response.ok || !json.access_token) {
     return { ...token, error: "RefreshAccessTokenError" };
   }
-
   const accessTokenExpires =
     Date.now() + (json.expires_in ?? 3600) * 1000;
 
