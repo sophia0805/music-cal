@@ -15,7 +15,7 @@ import {
   type PointerEvent,
 } from "react";
 
-type ApiEvent = {
+export type CalendarInputEvent = {
   id: string;
   title: string;
   start: string;
@@ -276,7 +276,11 @@ function buildCells(segments: LayoutNote[], totalDays: number): LayoutCell[] {
   return out;
 }
 
-export default function CalendarGrid() {
+type CalendarGridProps = {
+  inputEvents?: CalendarInputEvent[];
+};
+
+export default function CalendarGrid({ inputEvents }: CalendarGridProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [events, setEvents] = useState<CalEvent[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -635,16 +639,22 @@ export default function CalendarGrid() {
   const fetchEvents: EventSourceFunc = useCallback(async (info, successCallback, failureCallback) => {
     setLoadError(null);
     try {
-      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const params = new URLSearchParams({ timeMin: info.startStr, timeMax: info.endStr, timeZone });
-      const response = await fetch(`/api/calendar?${params.toString()}`, { credentials: "include" });
-      const payload = await response.json();
-      if (!response.ok) {
-        setLoadError(payload.hint || payload.error || "Failed to load.");
-        successCallback([]);
-        return;
+      let list: CalendarInputEvent[] = [];
+      if (inputEvents) {
+        list = inputEvents;
+      } else {
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const params = new URLSearchParams({ timeMin: info.startStr, timeMax: info.endStr, timeZone });
+        const response = await fetch(`/api/calendar?${params.toString()}`, { credentials: "include" });
+        const payload = await response.json();
+        if (!response.ok) {
+          setLoadError(payload.hint || payload.error || "Failed to load.");
+          successCallback([]);
+          return;
+        }
+        list = (payload.events as CalendarInputEvent[]) ?? [];
       }
-      const list = (payload.events as ApiEvent[]) ?? [];
+
       const parsed: CalEvent[] = list.flatMap((e): CalEvent[] => {
         if (e.allDay) {
           const start = parseAllDayDate(String(e.start));
@@ -687,7 +697,7 @@ export default function CalendarGrid() {
       setLoadError("Could not load calendar.");
       failureCallback(err as Error);
     }
-  }, []);
+  }, [inputEvents]);
 
   const onEventClick = useCallback((info: EventClickArg) => {
     info.jsEvent.preventDefault();
