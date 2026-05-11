@@ -6,64 +6,59 @@ import { signIn, signOut, useSession } from "next-auth/react";
 const CalendarGrid = dynamic(() => import("@/components/calendar-grid"), {
   ssr: false,
   loading: () => (
-    <p className="rounded-2xl border border-zinc-200/70 bg-white/70 px-4 py-14 text-center text-sm text-zinc-500 shadow-sm backdrop-blur">
-      Loading calendar…
-    </p>
+    <div className="flex min-h-[200px] items-center justify-center border border-[var(--border)] bg-[var(--panel)] px-4 py-10 text-sm text-[var(--muted)]">
+      Loading…
+    </div>
   ),
 });
 
-const shellCardClass =
-  "rounded-2xl border border-zinc-200/70 bg-white/75 shadow-sm backdrop-blur";
+const panelClass = "border border-[var(--border)] bg-[var(--panel)]";
 
 export default function Home() {
   const { data: session, status } = useSession();
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-5 py-8 md:px-8 md:py-10">
-      <div className="mb-6 space-y-1">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-400">
-          Calendar
-        </p>
-        <h1 className="text-3xl font-semibold tracking-tight text-zinc-800 md:text-4xl">
-          Google Calendar
+    <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-3 py-8 sm:px-5">
+      <header className="mb-8 w-full border-b border-[var(--border)] pb-6">
+        <h1 className="m-0 text-3xl font-semibold tracking-tight text-[var(--foreground)] sm:text-4xl">
+          Music Cal
         </h1>
-      </div>
+        <p className="mt-3 max-w-2xl text-base leading-relaxed text-[var(--muted)]">
+          Turn your calendar into a fun song!
+        </p>
+      </header>
       {status === "loading" ? (
-        <p className="mt-4 text-sm text-zinc-500">Loading…</p>
+        <div
+          className="mt-1 h-16 max-w-md border border-[var(--border)] bg-[var(--panel)]"
+          aria-hidden
+        />
       ) : !session ? (
-        <section className={`mt-4 max-w-xl p-6 ${shellCardClass}`}>
-          <p className="text-sm leading-7 text-zinc-600">
-            Connect your Google account to view your events and make a song out of them.
+        <section className={`mt-1 max-w-md p-5 ${panelClass}`}>
+          <p className="m-0 text-sm">
+            Sign in with Google to load your Google Calendar.
           </p>
           <button
             type="button"
-            className="mt-5 rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-700"
+            className="mt-4 border border-[var(--accent)] bg-[var(--accent)] px-3 py-2 text-sm text-white"
             onClick={() => void signIn("google")}
           >
-            Connect Google Account
+            Continue with Google
           </button>
         </section>
       ) : (
-        <section className="mt-4 space-y-4">
+        <section className="mt-1 space-y-3">
           <div
-            className={`flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between ${shellCardClass}`}
+            className={`flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between ${panelClass}`}
           >
-            <div>
-              <p className="text-xs uppercase tracking-wide text-zinc-400">
-                Signed in as
-              </p>
-              <p className="font-medium text-zinc-700">{session.user?.email}</p>
-            </div>
+            <p className="m-0 text-sm">{session.user?.email}</p>
             <button
               type="button"
-              className="w-fit rounded-xl border border-zinc-300/80 bg-white px-4 py-2 text-sm text-zinc-600 transition hover:bg-zinc-50"
+              className="w-fit border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-sm"
               onClick={() => void signOut()}
             >
               Sign out
             </button>
           </div>
-          <div className="rounded-2xl border border-zinc-200/70 bg-white/80 p-3 shadow-sm backdrop-blur md:p-5">
-            <CalendarGrid />
-          </div>
+          <CalendarGrid />
         </section>
       )}
     </main>

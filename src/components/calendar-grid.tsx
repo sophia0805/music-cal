@@ -18,11 +18,34 @@ type ApiEvent = {
 };
 
 const SECONDS_PER_COLUMN = 0.48;
-const NOTE_COLORS = [
-  "#f87171","#fb923c","#fbbf24","#a3e635",
-  "#34d399","#22d3ee","#60a5fa","#a78bfa",
-  "#f472b6","#e879f9","#94a3b8","#67e8f9",
+
+/** Saturated blocks — readable with white labels; also used for calendar event chips. */
+const FUN_EVENT_COLORS = [
+  "#dc2626",
+  "#ea580c",
+  "#ca8a04",
+  "#16a34a",
+  "#0d9488",
+  "#2563eb",
+  "#7c3aed",
+  "#db2777",
+  "#0891b2",
 ];
+
+function colorIndexFromId(eventId: string): number {
+  let h = 0;
+  for (let i = 0; i < eventId.length; i++) h = (h * 31 + eventId.charCodeAt(i)) >>> 0;
+  return h % FUN_EVENT_COLORS.length;
+}
+
+function eventStyleFromId(eventId: string): {
+  backgroundColor: string;
+  borderColor: string;
+  textColor: string;
+} {
+  const bg = FUN_EVENT_COLORS[colorIndexFromId(eventId)];
+  return { backgroundColor: bg, borderColor: "#475569", textColor: "#f8fafc" };
+}
 
 const KEY_WIDTH = 0;
 const ROW_HEIGHT = 36;
@@ -31,7 +54,7 @@ const PIXELS_PER_COL = 52;
 const GRID_COLS = 7;
 
 const RULER_FONT = '12px ui-monospace, monospace';
-const NOTE_LABEL_FONT = 'bold 11px ui-monospace, monospace';
+const NOTE_LABEL_FONT = '11px ui-monospace, monospace';
 
 function fillTextClipped(
   ctx: CanvasRenderingContext2D,
@@ -51,7 +74,6 @@ function fillTextClipped(
 const yForWeekRow = (weekRow: number) => RULER_HEIGHT + weekRow * ROW_HEIGHT;
 
 const midiToFreq = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
-const noteColor = (midi: number) => NOTE_COLORS[midi % NOTE_COLORS.length];
 
 function baseMidiFromWeekRow(weekRow: number, numWeekRows: number): number {
   const hi = 84;
@@ -317,12 +339,17 @@ export default function CalendarGrid() {
     const cells = layoutRollCells(segments, totalDays);
     layoutRef.current = cells;
 
-    ctx.fillStyle = "#101015";
+    const rollBg = "#f1f5f9";
+    const rulerBg = "#e8eef4";
+    const line = "#cbd5e1";
+    const labelFg = "#334155";
+
+    ctx.fillStyle = rollBg;
     ctx.fillRect(0, 0, rollW, rollH);
 
-    ctx.fillStyle = "#1a1a22";
+    ctx.fillStyle = rulerBg;
     ctx.fillRect(0, 0, rollW, RULER_HEIGHT);
-    ctx.strokeStyle = "#ffffff18";
+    ctx.strokeStyle = line;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, RULER_HEIGHT - 0.5);
@@ -332,14 +359,14 @@ export default function CalendarGrid() {
     ctx.font = RULER_FONT;
     for (let c = 0; c < GRID_COLS; c++) {
       const x = c * PIXELS_PER_COL;
-      ctx.strokeStyle = c === 0 ? "#ffffff22" : "#ffffff0d";
+      ctx.strokeStyle = line;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
       ctx.lineTo(x + 0.5, RULER_HEIGHT);
       ctx.stroke();
 
       const name = DAY_NAMES[(firstDay + c) % 7];
-      ctx.fillStyle = "#b4b4c8";
+      ctx.fillStyle = labelFg;
       const pad = 6;
       const colW = PIXELS_PER_COL - pad * 2;
       ctx.save();
@@ -350,13 +377,10 @@ export default function CalendarGrid() {
       ctx.restore();
     }
 
-    for (let wr = 0; wr < numWeekRows; wr++) {
-      const y = yForWeekRow(wr);
-      ctx.fillStyle = wr % 2 === 0 ? "#14141c" : "#12121a";
-      ctx.fillRect(0, y, rollW, ROW_HEIGHT);
-    }
+    ctx.fillStyle = rollBg;
+    ctx.fillRect(0, RULER_HEIGHT, rollW, rollH - RULER_HEIGHT);
 
-    ctx.strokeStyle = "#ffffff0a";
+    ctx.strokeStyle = line;
     ctx.lineWidth = 1;
     for (let c = 1; c < GRID_COLS; c++) {
       const x = c * PIXELS_PER_COL;
@@ -366,7 +390,7 @@ export default function CalendarGrid() {
       ctx.stroke();
     }
 
-    ctx.strokeStyle = "#ffffff08";
+    ctx.strokeStyle = line;
     for (let wr = 0; wr <= numWeekRows; wr++) {
       const y = RULER_HEIGHT + wr * ROW_HEIGHT;
       ctx.beginPath();
@@ -390,41 +414,31 @@ export default function CalendarGrid() {
       const slotH = inner / c.depth;
       const y = yBase + cellPad + c.stack * slotH;
       const h = Math.max(3, slotH - 1);
-      const color = noteColor(c.midi);
+      const color = FUN_EVENT_COLORS[colorIndexFromId(c.id)];
 
-      ctx.globalAlpha = 0.92;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.roundRect(cellLeft, y, cellW, h, 3);
-      ctx.fill();
-
-      ctx.globalAlpha = 0.3;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(cellLeft + 1, y + 1, cellW - 2, 2);
       ctx.globalAlpha = 1;
+      ctx.fillStyle = color;
+      ctx.fillRect(cellLeft, y, cellW, h);
 
-      ctx.fillStyle = "#0a0a10cc";
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cellLeft + 0.5, y + 0.5, cellW - 1, h - 1);
+
+      ctx.fillStyle = "#f8fafc";
       ctx.font = NOTE_LABEL_FONT;
       const label = c.title || "(No title)";
       ctx.save();
       ctx.beginPath();
-      ctx.roundRect(cellLeft, y, cellW, h, 3);
+      ctx.rect(cellLeft, y, cellW, h);
       ctx.clip();
-      fillTextClipped(ctx, label, cellLeft + 4, y + h - 5, Math.max(0, cellW - 10));
+      fillTextClipped(ctx, label, cellLeft + 3, y + h - 4, Math.max(0, cellW - 8));
       ctx.restore();
     }
 
     if (playheadColumn !== null) {
       const px = playheadColumn * PIXELS_PER_COL;
-      const grad = ctx.createLinearGradient(px - 16, 0, px + 16, 0);
-      grad.addColorStop(0, "#fffc0022");
-      grad.addColorStop(0.5, "#fffc0088");
-      grad.addColorStop(1, "#fffc0022");
-      ctx.fillStyle = grad;
-      ctx.fillRect(px - 16, 0, 32, rollH);
-
-      ctx.strokeStyle = "#fffef0";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(px + 0.5, 0);
       ctx.lineTo(px + 0.5, rollH);
@@ -629,10 +643,18 @@ export default function CalendarGrid() {
 
       setCalEvents(parsed);
 
-      const fcEvents: EventInput[] = list.map((e) => ({
-        id: e.id, title: e.title, start: e.start, end: e.end,
-        allDay: e.allDay, extendedProps: { link: e.link },
-      }));
+      const fcEvents: EventInput[] = list.map((e) => {
+        const colors = eventStyleFromId(e.id);
+        return {
+          id: e.id,
+          title: e.title,
+          start: e.start,
+          end: e.end,
+          allDay: e.allDay,
+          extendedProps: { link: e.link },
+          ...colors,
+        };
+      });
       successCallback(fcEvents);
     } catch (err) {
       setLoadError("Could not load calendar.");
@@ -647,39 +669,36 @@ export default function CalendarGrid() {
   }, []);
 
   return (
-    <div className="w-full rounded-xl border border-zinc-200/70 bg-white text-zinc-800">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200/70 px-4 py-3">
-        <p className="text-sm text-zinc-500 font-mono tracking-tight">
-          Roll matches the calendar grid: 7 weekday columns × week rows. Play sweeps Sun→Sat — every
-          Sunday lines up in one column and sounds together. Click a block to open the event.
-        </p>
-        <div className="flex gap-2">
+    <div className="w-full border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-2">
+        <p className="m-0 text-sm text-[var(--muted)]">Click a block to open the event.</p>
+        <div className="flex gap-1">
           <button
             type="button"
             onClick={playCalendarSong}
             disabled={isPlaying || calEvents.length === 0}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
+            className="border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-sm disabled:opacity-40"
           >
-            {isPlaying ? "Playing..." : "▶ Play"}
+            {isPlaying ? "Playing…" : "Play"}
           </button>
           <button
             type="button"
             onClick={() => stopPlaybackRef.current?.()}
             disabled={!isPlaying}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
+            className="border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-sm disabled:opacity-40"
           >
-            ■ Stop
+            Stop
           </button>
         </div>
       </div>
 
       {loadError && (
-        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+        <div className="border-b border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm">
           {loadError}
         </div>
       )}
 
-      <div className="relative w-full bg-[#0f0f14]">
+      <div className="relative w-full bg-[#f1f5f9]">
         <div
           ref={rollScrollRef}
           className="max-h-[min(88vh,860px)] w-full overflow-x-auto overflow-y-auto overscroll-x-contain"
@@ -694,7 +713,7 @@ export default function CalendarGrid() {
         </div>
       </div>
 
-      <div className="fc-shell relative w-full bg-white p-2.5 md:p-3">
+      <div className="fc-shell relative w-full border-t border-[var(--border)] bg-[var(--background)] p-2 md:p-2">
         <FullCalendar
           ref={calendarRef}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
@@ -719,12 +738,25 @@ export default function CalendarGrid() {
 
       <style jsx global>{`
         .fc-shell .fc {
-          --fc-border-color: rgb(236, 236, 240);
-          --fc-today-bg-color: rgba(15, 23, 42, 0.04);
-          --fc-event-bg-color: rgb(114, 79, 114);
+          --fc-border-color: #e2e8f0;
+          --fc-button-bg-color: #ffffff;
+          --fc-button-border-color: #cbd5e1;
+          --fc-button-text-color: #334155;
+          --fc-button-hover-bg-color: #f1f5f9;
+          --fc-today-bg-color: #e0f2fe;
+          --fc-event-bg-color: #2563eb;
+          --fc-event-border-color: #475569;
+          --fc-page-bg-color: #f6f8fb;
+          --fc-neutral-text-color: #334155;
           font-family: inherit;
         }
-        .fc-view-harness { overflow: hidden; }
+        .fc-shell .fc .fc-toolbar-title {
+          font-size: 1rem;
+          font-weight: normal;
+        }
+        .fc-view-harness {
+          overflow: hidden;
+        }
       `}</style>
     </div>
   );
